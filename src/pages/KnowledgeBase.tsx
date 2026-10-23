@@ -42,8 +42,16 @@ export default function KnowledgeBase() {
   const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
   const [chapterNumberInput, setChapterNumberInput] = useState<number>(1);
   const [chapterTitleInput, setChapterTitleInput] = useState<string>('');
+  const [curriculumTab, setCurriculumTab] = useState<'chapters' | 'syllabus'>('chapters');
+  const [chapterTextInput, setChapterTextInput] = useState('');
   const [isIngesting, setIsIngesting] = useState(false);
   const [ingestStatus, setIngestStatus] = useState<string | null>(null);
+
+  // Syllabus Weightage State
+  const [syllabusText, setSyllabusText] = useState('');
+  const [isIngestingSyllabus, setIsIngestingSyllabus] = useState(false);
+  const [syllabusTopics, setSyllabusTopics] = useState<any[]>([]);
+  const [isLoadingTopics, setIsLoadingTopics] = useState(false);
 
   // Chapter Library State
   const [chapters, setChapters] = useState<CurriculumChapter[]>([]);
@@ -82,7 +90,7 @@ export default function KnowledgeBase() {
   const activeSubjectObj = subjectsList.find((s) => s.name === activeSubject);
   const activeClassName = activeSubjectObj?.className || activeSubjectObj?.name || (activeSubject !== 'All subjects' ? activeSubject : '');
 
-  // 2. Fetch Chapters when active subject changes
+  // 2. Fetch Chapters (Documented /api/curriculum/chapters with fallback to /api/rag/chapters)
   const fetchChaptersForSubject = async (clsName: string, subjName: string) => {
     if (!clsName || subjName === 'All subjects') {
       setChapters([]);
@@ -90,6 +98,24 @@ export default function KnowledgeBase() {
     }
     setIsLoadingChapters(true);
     try {
+      // 1. Try documented endpoint: GET /api/curriculum/chapters?class_subject_id=...
+      if (activeSubjectObj?.id) {
+        try {
+          const docRes = await fetch(`${API_BASE_URL}/api/curriculum/chapters?class_subject_id=${encodeURIComponent(activeSubjectObj.id)}`);
+          if (docRes.ok) {
+            const docData = await docRes.json();
+            const list = docData.chapters || (Array.isArray(docData) ? docData : null);
+            if (Array.isArray(list)) {
+              setChapters(list);
+              setChapterNumberInput(list.length + 1);
+              setIsLoadingChapters(false);
+              return;
+            }
+          }
+        } catch {}
+      }
+
+      // 2. Fallback
       const res = await fetch(`${API_BASE_URL}/api/rag/chapters?className=${encodeURIComponent(clsName)}&subjectName=${encodeURIComponent(subjName)}`);
       const data = await res.json();
       if (data.success && Array.isArray(data.chapters)) {
@@ -108,11 +134,34 @@ export default function KnowledgeBase() {
     }
   };
 
+  // Fetch Syllabus Topics: GET /api/curriculum/topics?class_subject_id=...
+  const fetchSyllabusTopics = async () => {
+    if (!activeSubjectObj?.id) return;
+    setIsLoadingTopics(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/curriculum/topics?class_subject_id=${encodeURIComponent(activeSubjectObj.id)}`);
+      const data = await res.json();
+      if (data.success && Array.isArray(data.topics)) {
+        setSyllabusTopics(data.topics);
+      } else if (Array.isArray(data)) {
+        setSyllabusTopics(data);
+      } else {
+        setSyllabusTopics([]);
+      }
+    } catch {
+      setSyllabusTopics([]);
+    } finally {
+      setIsLoadingTopics(false);
+    }
+  };
+
   useEffect(() => {
     if (activeClassName && activeSubject !== 'All subjects') {
       fetchChaptersForSubject(activeClassName, activeSubject);
+      fetchSyllabusTopics();
     } else {
       setChapters([]);
+      setSyllabusTopics([]);
     }
   }, [activeClassName, activeSubject]);
 
@@ -156,10 +205,10 @@ export default function KnowledgeBase() {
     }
   };
 
-  // 4. Handle Chapter Ingestion (Sequential, Cumulative)
+  // 4. Handle Chapter Ingestion (POST /api/curriculum/chapters/ingest with fallback to /api/rag/chapter/ingest)
   const handleIngestChapter = async () => {
-    if (uploadedFiles.length === 0) {
-      alert('⚠️ Please select a Chapter PDF document to upload.');
+    if (uploadedFiles.length === 0 && !chapterTextInput.trim()) {
+      alert('⚠️ Please select a Chapter PDF document or provide chapter text.');
       return;
     }
     if (!activeSubjectObj) {
@@ -171,6 +220,40 @@ export default function KnowledgeBase() {
     setIngestStatus('Extracting text and identifying subtopics with AI...');
 
     try {
+      // 1. Try documented endpoint: POST /api/curriculum/chapters/ingest
+      if (activeSubjectObj.id) {
+        try {
+          const docRes = await fetch(`${API_BASE_URL}/api/curriculum/chapters/ingest`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              class_subject_id: activeSubjectObj.id,
+              chapter_title: chapterTitleInput.trim() || uploadedFiles[0]?.name?.replace(/\.pdf$/i, '') || `Chapter ${chapterNumberInput}`,
+              chapter_number: Number(chapterNumberInput) || 1,
+              chapter_text: chapterTextInput.trim() || `Chapter ${chapterNumberInput}: ${chapterTitleInput.trim()}`,
+              file_name: uploadedFiles[0]?.name || 'chapter.pdf',
+              pdf_url: ''
+            })
+          });
+          if (docRes.ok) {
+            const docData = await docRes.json();
+            if (docData.success || docData.message) {
+              setIngestStatus(`✅ ${docData.message || 'Chapter indexed successfully!'}`);
+              alert(`✅ ${docData.message || 'Chapter ingested successfully!'}`);
+              setUploadedFiles([]);
+              setChapterTitleInput('');
+              setChapterTextInput('');
+              await fetchChaptersForSubject(activeClassName, activeSubject);
+              setIsIngesting(false);
+              return;
+            }
+          }
+        } catch {
+          // Fallback below
+        }
+      }
+
+      // 2. Multipart Fallback
       const formData = new FormData();
       formData.append('className', activeClassName);
       formData.append('subjectName', activeSubject);
@@ -191,8 +274,7 @@ export default function KnowledgeBase() {
         alert(`✅ ${data.message || 'Chapter ingested successfully!'}`);
         setUploadedFiles([]);
         setChapterTitleInput('');
-
-        // Refresh chapter list
+        setChapterTextInput('');
         await fetchChaptersForSubject(activeClassName, activeSubject);
       } else {
         alert(`⚠️ Ingestion note: ${data.message}`);
@@ -204,6 +286,42 @@ export default function KnowledgeBase() {
       setIngestStatus('Connection error during chapter ingestion.');
     } finally {
       setIsIngesting(false);
+    }
+  };
+
+  // 4b. Ingest Syllabus Weightage (POST /api/curriculum/syllabus/ingest)
+  const handleIngestSyllabus = async () => {
+    if (!syllabusText.trim()) {
+      alert('Please enter syllabus breakdown or weightage text.');
+      return;
+    }
+    if (!activeSubjectObj?.id) {
+      alert('Please select a subject first.');
+      return;
+    }
+
+    setIsIngestingSyllabus(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/curriculum/syllabus/ingest`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          class_subject_id: activeSubjectObj.id,
+          syllabus_text: syllabusText.trim()
+        })
+      });
+      const data = await res.json();
+      if (res.ok && (data.success || data.message || data.topics)) {
+        alert('✅ Syllabus and topic weightages ingested successfully!');
+        setSyllabusText('');
+        fetchSyllabusTopics();
+      } else {
+        alert(data.message || 'Unable to parse syllabus.');
+      }
+    } catch {
+      alert('Error connecting to syllabus ingestion service.');
+    } finally {
+      setIsIngestingSyllabus(false);
     }
   };
 
@@ -343,7 +461,53 @@ export default function KnowledgeBase() {
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            
+            {/* Tab Switcher */}
+            <div style={{ display: 'flex', gap: '0.5rem', borderBottom: '1px solid #E2E8F0', paddingBottom: '0.5rem' }}>
+              <button
+                type="button"
+                onClick={() => setCurriculumTab('chapters')}
+                style={{
+                  padding: '0.5rem 1rem',
+                  borderRadius: '0.5rem',
+                  border: 'none',
+                  background: curriculumTab === 'chapters' ? '#EFF6FF' : 'transparent',
+                  color: curriculumTab === 'chapters' ? '#1D4ED8' : '#64748B',
+                  fontWeight: 700,
+                  fontSize: '0.875rem',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.4rem'
+                }}
+              >
+                <BookOpen className="size-4" />
+                <span>Chapter Textbooks & RAG ({chapters.length})</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setCurriculumTab('syllabus')}
+                style={{
+                  padding: '0.5rem 1rem',
+                  borderRadius: '0.5rem',
+                  border: 'none',
+                  background: curriculumTab === 'syllabus' ? '#EFF6FF' : 'transparent',
+                  color: curriculumTab === 'syllabus' ? '#1D4ED8' : '#64748B',
+                  fontWeight: 700,
+                  fontSize: '0.875rem',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.4rem'
+                }}
+              >
+                <Layers className="size-4" />
+                <span>Syllabus & Weightage Ingestion ({syllabusTopics.length})</span>
+              </button>
+            </div>
+
+            {curriculumTab === 'chapters' && (
+              <>
             {/* CARD 1: CHAPTER-WISE PDF UPLOADER */}
             <div className="m-card">
               <div className="m-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
@@ -571,7 +735,154 @@ export default function KnowledgeBase() {
                 </div>
               )}
             </div>
+            </>
+            )}
 
+            {/* SYLLABUS & WEIGHTAGE TAB (POST /api/curriculum/syllabus/ingest & GET /api/curriculum/topics) */}
+            {curriculumTab === 'syllabus' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                <div className="m-card">
+                  <div className="m-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <h3 className="m-card-title" style={{ fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <Layers className="size-4 text-blue-600" />
+                        <span>Curriculum Syllabus & Marks Weightage Ingestion</span>
+                      </h3>
+                      <p style={{ margin: '0.2rem 0 0 0', fontSize: '0.8125rem', color: '#64748B' }}>
+                        Paste official board syllabus text with marks weightages (e.g. CBSE / ICSE / State Board curriculum circular)
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => {
+                        setSyllabusText(
+                          `Unit I: Chemical Substances - Nature and Behaviour (25 Marks)\n` +
+                          `- Chemical Reactions & Equations: Types of chemical reactions, combination, decomposition, displacement, double displacement, precipitation, neutralization, oxidation and reduction.\n` +
+                          `- Acids, Bases and Salts: Definitions in terms of furnishing of H+ and OH- ions, general properties, examples and uses, concept of pH scale, importance of pH in everyday life, preparation and uses of Sodium Hydroxide, Bleaching powder, Baking soda, Washing soda and Plaster of Paris.\n` +
+                          `- Metals and Non-metals: Properties of metals and non-metals, reactivity series, formation and properties of ionic compounds, basic metallurgical processes, corrosion and its prevention.\n\n` +
+                          `Unit II: World of Living (25 Marks)\n` +
+                          `- Life Processes: Basic concept of nutrition, respiration, transport and excretion in plants and animals.\n` +
+                          `- Control and Co-ordination: Tropic movements in plants, introduction to plant hormones, control and co-ordination in animals, nervous system, voluntary, involuntary and reflex action, chemical co-ordination, animal hormones.\n\n` +
+                          `Unit III: Natural Phenomena (12 Marks)\n` +
+                          `- Reflection and refraction of light, spherical mirrors, lenses, magnification, power of a lens, human eye and colorful world.\n\n` +
+                          `Unit IV: Effects of Current (13 Marks)\n` +
+                          `- Electric current, potential difference, Ohm's law, resistance, series and parallel combination, heating effect of electric current, magnetic effects of electric current.\n\n` +
+                          `Unit V: Natural Resources (05 Marks)\n` +
+                          `- Our Environment: Eco-system, environmental problems, ozone depletion, waste production and their solutions.`
+                        );
+                      }}
+                      style={{ fontSize: '0.75rem' }}
+                    >
+                      Load Sample CBSE Syllabus
+                    </button>
+                  </div>
+
+                  <div style={{ marginTop: '1rem' }}>
+                    <textarea
+                      rows={8}
+                      className="form-input"
+                      style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.8125rem', lineHeight: '1.5' }}
+                      placeholder="Paste curriculum syllabus outline with unit marks allocations..."
+                      value={syllabusText}
+                      onChange={(e) => setSyllabusText(e.target.value)}
+                    />
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.75rem' }}>
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={handleIngestSyllabus}
+                        disabled={isIngestingSyllabus || !syllabusText.trim()}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
+                      >
+                        <Sparkles className="size-4" />
+                        <span>{isIngestingSyllabus ? 'Extracting Blueprint...' : 'Ingest Syllabus Weightage'}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Parsed Topics & Weightage Viewer */}
+                <div className="m-card">
+                  <div className="m-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h3 className="m-card-title" style={{ fontSize: '1rem' }}>
+                      Extracted Units & Topics ({syllabusTopics.length})
+                    </h3>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={fetchSyllabusTopics}
+                    >
+                      Refresh Topics
+                    </button>
+                  </div>
+
+                  {isLoadingTopics ? (
+                    <div style={{ padding: '2rem', textAlign: 'center', color: '#64748B' }}>
+                      Loading curriculum topics...
+                    </div>
+                  ) : syllabusTopics.length === 0 ? (
+                    <div style={{ padding: '2.5rem', textAlign: 'center', background: '#F8FAFC', borderRadius: '0.5rem', border: '1px dashed #CBD5E1' }}>
+                      <Layers className="size-8 mx-auto mb-2 text-slate-400" />
+                      <p style={{ margin: '0 0 0.25rem 0', fontWeight: 700, color: '#334155' }}>No syllabus weightages ingested yet.</p>
+                      <p style={{ margin: 0, fontSize: '0.8rem', color: '#64748B' }}>
+                        Paste your course syllabus above and click "Ingest Syllabus Weightage" to populate topic-level blueprint limits.
+                      </p>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.85rem' }}>
+                      {syllabusTopics.map((top, idx) => {
+                        const title = top.unit_title || top.title || top.name || `Unit ${idx + 1}`;
+                        const weight = top.marks || top.weightage || top.marks_weightage;
+                        const sublist = Array.isArray(top.subtopics) ? top.subtopics : Array.isArray(top.topics) ? top.topics : [];
+
+                        return (
+                          <div
+                            key={top.id || idx}
+                            style={{
+                              padding: '1rem',
+                              background: '#FFFFFF',
+                              border: '1.5px solid #E2E8F0',
+                              borderRadius: '0.5rem',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              justifyContent: 'space-between'
+                            }}
+                          >
+                            <div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
+                                <h4 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 700, color: '#0F172A' }}>
+                                  {title}
+                                </h4>
+                                {weight && (
+                                  <span style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem', background: '#ECFDF5', color: '#065F46', borderRadius: '4px', fontWeight: 700 }}>
+                                    {weight} Marks
+                                  </span>
+                                )}
+                              </div>
+                              {sublist.length > 0 && (
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginTop: '0.5rem' }}>
+                                  {sublist.slice(0, 5).map((st: any, i: number) => (
+                                    <span key={i} style={{ fontSize: '0.7rem', padding: '0.15rem 0.35rem', background: '#F1F5F9', color: '#475569', borderRadius: '3px' }}>
+                                      {typeof st === 'string' ? st : st.name}
+                                    </span>
+                                  ))}
+                                  {sublist.length > 5 && (
+                                    <span style={{ fontSize: '0.7rem', color: '#94A3B8' }}>
+                                      +{sublist.length - 5} more
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

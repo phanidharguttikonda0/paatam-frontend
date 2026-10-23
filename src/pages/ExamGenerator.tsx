@@ -403,26 +403,69 @@ export default function ExamGenerator() {
         marksConfig
       };
 
-      console.log('📡 [EXAM GENERATOR UI] Requesting unified question paper generation:', payload);
+      console.log('📡 [EXAM GENERATOR UI] Requesting question paper generation:', payload);
 
-      const res = await fetch(`${API_BASE_URL}/api/rag/generate-exam`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+      let genSuccess = false;
+      // Documented API: POST /api/assignments/generate
+      try {
+        const docPayload = {
+          class_subject_id: selectedClassSubjectId || '1001',
+          exam_title: payload.examTitle,
+          target_marks: payload.targetMarks,
+          language: payload.language,
+          difficulty: payload.difficulty,
+          chapter_titles: payload.chapterTitles || selectedChapters,
+          subtopics: payload.subtopics,
+          question_counts: {
+            mcqCount: totalMcq,
+            veryShortCount: totalVsa,
+            shortCount: totalSa,
+            descriptiveCount: totalLong
+          }
+        };
 
-      const data = await res.json();
-      console.log('📥 [EXAM GENERATOR UI] Response received:', data);
+        const docRes = await fetch(`${API_BASE_URL}/api/assignments/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(docPayload)
+        });
 
-      if (data.success && Array.isArray(data.questions) && data.questions.length > 0) {
-        setQuestions(data.questions);
-        // Automatically save newly generated paper to history
-        const generatedId = 'paper-' + Date.now();
-        setCurrentPaperId(generatedId);
-        savePaperToStorage(data.questions, payload.examTitle, generatedId);
-        alert(`✅ Examination Paper Generated Successfully! (${data.totalQuestions} Questions, ${data.totalMarks} Marks)`);
-      } else {
-        alert(data.message || 'Error generating question paper.');
+        if (docRes.ok) {
+          const docData = await docRes.json();
+          if (docData.success && Array.isArray(docData.questions) && docData.questions.length > 0) {
+            setQuestions(docData.questions);
+            const generatedId = 'paper-' + Date.now();
+            setCurrentPaperId(generatedId);
+            savePaperToStorage(docData.questions, payload.examTitle, generatedId);
+            alert(`✅ Examination Paper Generated Successfully! (${docData.totalQuestions || docData.questions.length} Questions)`);
+            genSuccess = true;
+          }
+        }
+      } catch {
+        // Fallback below
+      }
+
+      if (!genSuccess) {
+        // Fallback to legacy endpoint
+        const res = await fetch(`${API_BASE_URL}/api/rag/generate-exam`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+        console.log('📥 [EXAM GENERATOR UI] Response received:', data);
+
+        if (data.success && Array.isArray(data.questions) && data.questions.length > 0) {
+          setQuestions(data.questions);
+          // Automatically save newly generated paper to history
+          const generatedId = 'paper-' + Date.now();
+          setCurrentPaperId(generatedId);
+          savePaperToStorage(data.questions, payload.examTitle, generatedId);
+          alert(`✅ Examination Paper Generated Successfully! (${data.totalQuestions} Questions, ${data.totalMarks} Marks)`);
+        } else {
+          alert(data.message || 'Error generating question paper.');
+        }
       }
     } catch (err) {
       console.error('❌ [EXAM GENERATOR UI] Request failed:', err);
@@ -716,36 +759,82 @@ export default function ExamGenerator() {
     const qId = q.id || q.number || q.questionNo;
     setIsRegeneratingQuestionId(String(qId));
     try {
-      const res = await fetch(`${API_BASE_URL}/api/rag/regenerate-question`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question: q,
-          subjectName: subject,
-          className: activeClassName,
-          chapterTitle: q.topic || q.stem || (selectedChapters.length > 0 ? selectedChapters[0] : ''),
-          language: paperLanguage,
-          difficulty
-        })
-      });
-      const data = await res.json();
-      if (data.success && data.question) {
-        const replacement = {
-          ...data.question,
-          id: q.id || 'q-' + Date.now(),
-          number: q.number || q.questionNo,
-          questionNo: q.questionNo || q.number,
-          section: q.section,
-          marks: q.marks
-        };
-        setQuestions((prev) => prev.map((item) => {
-          const itemId = item.id || item.number || item.questionNo;
-          return itemId === qId ? replacement : item;
-        }));
-        setSaveSuccessMsg(`🔄 Question Q${q.questionNo || q.number} regenerated with textbook precision!`);
-        setTimeout(() => setSaveSuccessMsg(''), 3000);
-      } else {
-        alert(data.message || 'Unable to regenerate question.');
+      let regenSuccess = false;
+
+      // Documented API: POST /api/assignments/regenerate-question
+      try {
+        const docRes = await fetch(`${API_BASE_URL}/api/assignments/regenerate-question`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            class_subject_id: selectedClassSubjectId || '1001',
+            question_to_replace: q,
+            chapter_title: q.topic || q.stem || (selectedChapters.length > 0 ? selectedChapters[0] : ''),
+            subtopic: q.subtopic || '',
+            difficulty: difficulty,
+            language: paperLanguage,
+            avoid_texts: [q.text]
+          })
+        });
+
+        if (docRes.ok) {
+          const docData = await docRes.json();
+          const repl = docData.question || docData.replacement;
+          if (docData.success && repl) {
+            const replacement = {
+              ...repl,
+              id: q.id || 'q-' + Date.now(),
+              number: q.number || q.questionNo,
+              questionNo: q.questionNo || q.number,
+              section: q.section,
+              marks: q.marks
+            };
+            setQuestions((prev) => prev.map((item) => {
+              const itemId = item.id || item.number || item.questionNo;
+              return itemId === qId ? replacement : item;
+            }));
+            setSaveSuccessMsg(`🔄 Question Q${q.questionNo || q.number} regenerated with textbook precision!`);
+            setTimeout(() => setSaveSuccessMsg(''), 3000);
+            regenSuccess = true;
+          }
+        }
+      } catch {
+        // Fallback below
+      }
+
+      if (!regenSuccess) {
+        // Fallback to legacy endpoint
+        const res = await fetch(`${API_BASE_URL}/api/rag/regenerate-question`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            question: q,
+            subjectName: subject,
+            className: activeClassName,
+            chapterTitle: q.topic || q.stem || (selectedChapters.length > 0 ? selectedChapters[0] : ''),
+            language: paperLanguage,
+            difficulty
+          })
+        });
+        const data = await res.json();
+        if (data.success && data.question) {
+          const replacement = {
+            ...data.question,
+            id: q.id || 'q-' + Date.now(),
+            number: q.number || q.questionNo,
+            questionNo: q.questionNo || q.number,
+            section: q.section,
+            marks: q.marks
+          };
+          setQuestions((prev) => prev.map((item) => {
+            const itemId = item.id || item.number || item.questionNo;
+            return itemId === qId ? replacement : item;
+          }));
+          setSaveSuccessMsg(`🔄 Question Q${q.questionNo || q.number} regenerated with textbook precision!`);
+          setTimeout(() => setSaveSuccessMsg(''), 3000);
+        } else {
+          alert(data.message || 'Unable to regenerate question.');
+        }
       }
     } catch (err) {
       console.error(err);
@@ -760,34 +849,76 @@ export default function ExamGenerator() {
     const prompt = q.imagePrompt || q.text;
     setIsGeneratingImageForQuestionId(String(qId));
     try {
-      const res = await fetch(`${API_BASE_URL}/api/rag/generate-question-image`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt,
-          questionText: q.text,
-          subject: subject
-        })
-      });
-      const data = await res.json();
-      if (data.success && (data.imageUrl || data.diagramSvg)) {
-        setQuestions((prev) => prev.map((item) => {
-          const itemId = item.id || item.number || item.questionNo;
-          if (itemId === qId) {
-            return {
-              ...item,
-              imageUrl: data.imageUrl || undefined,
-              diagramSvg: data.diagramSvg || undefined,
-              imagePrompt: prompt,
-              hasVisual: true
-            };
+      let diagSuccess = false;
+
+      // Documented API: POST /api/assignments/generate-diagram
+      try {
+        const docRes = await fetch(`${API_BASE_URL}/api/assignments/generate-diagram`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            question_text: q.text,
+            subject: subject
+          })
+        });
+        if (docRes.ok) {
+          const docData = await docRes.json();
+          const svgOrImg = docData.diagramSvg || docData.diagram_svg;
+          const imgUrl = docData.imageUrl || docData.image_url;
+          if (docData.success && (imgUrl || svgOrImg)) {
+            setQuestions((prev) => prev.map((item) => {
+              const itemId = item.id || item.number || item.questionNo;
+              if (itemId === qId) {
+                return {
+                  ...item,
+                  imageUrl: imgUrl || undefined,
+                  diagramSvg: svgOrImg || undefined,
+                  imagePrompt: prompt,
+                  hasVisual: true
+                };
+              }
+              return item;
+            }));
+            setSaveSuccessMsg(`🎨 Generated educational visual diagram for Q${q.questionNo || q.number}!`);
+            setTimeout(() => setSaveSuccessMsg(''), 3000);
+            diagSuccess = true;
           }
-          return item;
-        }));
-        setSaveSuccessMsg(`🎨 Generated educational visual diagram for Q${q.questionNo || q.number}!`);
-        setTimeout(() => setSaveSuccessMsg(''), 3000);
-      } else {
-        alert(data.message || 'Could not generate visual diagram.');
+        }
+      } catch {
+        // Fallback below
+      }
+
+      if (!diagSuccess) {
+        // Fallback to legacy endpoint
+        const res = await fetch(`${API_BASE_URL}/api/rag/generate-question-image`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt,
+            questionText: q.text,
+            subject: subject
+          })
+        });
+        const data = await res.json();
+        if (data.success && (data.imageUrl || data.diagramSvg)) {
+          setQuestions((prev) => prev.map((item) => {
+            const itemId = item.id || item.number || item.questionNo;
+            if (itemId === qId) {
+              return {
+                ...item,
+                imageUrl: data.imageUrl || undefined,
+                diagramSvg: data.diagramSvg || undefined,
+                imagePrompt: prompt,
+                hasVisual: true
+              };
+            }
+            return item;
+          }));
+          setSaveSuccessMsg(`🎨 Generated educational visual diagram for Q${q.questionNo || q.number}!`);
+          setTimeout(() => setSaveSuccessMsg(''), 3000);
+        } else {
+          alert(data.message || 'Could not generate visual diagram.');
+        }
       }
     } catch (err) {
       console.error(err);
@@ -823,30 +954,63 @@ export default function ExamGenerator() {
         const qId = q.id || q.number || q.questionNo;
         setIsGeneratingImageForQuestionId(String(qId));
         const prompt = q.imagePrompt || q.text;
-        const res = await fetch(`${API_BASE_URL}/api/rag/generate-question-image`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt,
-            questionText: q.text,
-            subject: subject
-          })
-        });
-        const data = await res.json();
-        if (data.success && (data.imageUrl || data.diagramSvg)) {
-          setQuestions((prev) => prev.map((item) => {
-            const itemId = item.id || item.number || item.questionNo;
-            if (itemId === qId) {
-              return {
-                ...item,
-                imageUrl: data.imageUrl || undefined,
-                diagramSvg: data.diagramSvg || undefined,
-                imagePrompt: prompt,
-                hasVisual: true
-              };
+
+        let diagSuccess = false;
+        try {
+          const docRes = await fetch(`${API_BASE_URL}/api/assignments/generate-diagram`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question_text: q.text, subject: subject })
+          });
+          if (docRes.ok) {
+            const docData = await docRes.json();
+            const svgOrImg = docData.diagramSvg || docData.diagram_svg;
+            const imgUrl = docData.imageUrl || docData.image_url;
+            if (docData.success && (imgUrl || svgOrImg)) {
+              setQuestions((prev) => prev.map((item) => {
+                const itemId = item.id || item.number || item.questionNo;
+                if (itemId === qId) {
+                  return {
+                    ...item,
+                    imageUrl: imgUrl || undefined,
+                    diagramSvg: svgOrImg || undefined,
+                    imagePrompt: prompt,
+                    hasVisual: true
+                  };
+                }
+                return item;
+              }));
+              diagSuccess = true;
             }
-            return item;
-          }));
+          }
+        } catch {}
+
+        if (!diagSuccess) {
+          const res = await fetch(`${API_BASE_URL}/api/rag/generate-question-image`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prompt,
+              questionText: q.text,
+              subject: subject
+            })
+          });
+          const data = await res.json();
+          if (data.success && (data.imageUrl || data.diagramSvg)) {
+            setQuestions((prev) => prev.map((item) => {
+              const itemId = item.id || item.number || item.questionNo;
+              if (itemId === qId) {
+                return {
+                  ...item,
+                  imageUrl: data.imageUrl || undefined,
+                  diagramSvg: data.diagramSvg || undefined,
+                  imagePrompt: prompt,
+                  hasVisual: true
+                };
+              }
+              return item;
+            }));
+          }
         }
       }
       setSaveSuccessMsg(`🎨 Generated figures for all ${missing.length} visual questions!`);

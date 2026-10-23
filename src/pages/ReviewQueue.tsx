@@ -13,22 +13,53 @@ import { API_BASE_URL } from '../config/api';
 export default function ReviewQueue({ onScanScript }: { onScanScript?: () => void } = {}) {
   const [searchParams] = useSearchParams();
   const subjectFilter = searchParams.get('subjectFilter') || '';
+  const initialAssignmentId = searchParams.get('assignmentId') || '';
+
   const [submissions, setSubmissions] = useState<any[]>([]);
+  const [assignments, setAssignments] = useState<any[]>([]);
+  const [selectedAssignmentId, setSelectedAssignmentId] = useState<string>(initialAssignmentId);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterTab, setFilterTab] = useState<'all' | 'pending' | 'approved'>('all');
+
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/api/assignments`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success && Array.isArray(data.assignments)) {
+          setAssignments(data.assignments);
+        } else if (Array.isArray(data)) {
+          setAssignments(data);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     fetchSubmissions();
     const interval = setInterval(fetchSubmissions, 4000);
     return () => clearInterval(interval);
-  }, []);
+  }, [selectedAssignmentId]);
 
   const fetchSubmissions = async () => {
     try {
+      // 1. If an assignment is selected, call documented endpoint: GET /api/assignments/:id/submissions
+      if (selectedAssignmentId) {
+        const res = await fetch(`${API_BASE_URL}/api/assignments/${selectedAssignmentId}/submissions`);
+        if (res.ok) {
+          const data = await res.json();
+          const list = data.submissions || (Array.isArray(data) ? data : []);
+          setSubmissions(list);
+          return;
+        }
+      }
+
+      // 2. Fallback to global queue
       const res = await fetch(`${API_BASE_URL}/api/submissions`);
       const data = await res.json();
       if (data.success && Array.isArray(data.submissions)) {
         setSubmissions(data.submissions);
+      } else if (Array.isArray(data)) {
+        setSubmissions(data);
       }
     } catch (err) {
       console.error('Fetch queue error:', err);
@@ -142,6 +173,23 @@ export default function ReviewQueue({ onScanScript }: { onScanScript?: () => voi
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
             </div>
+
+            {/* Assessment Filter Dropdown */}
+            {assignments.length > 0 && (
+              <select
+                className="form-input"
+                style={{ maxWidth: '240px' }}
+                value={selectedAssignmentId}
+                onChange={(e) => setSelectedAssignmentId(e.target.value)}
+              >
+                <option value="">All Question Papers / Assessments</option>
+                {assignments.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.title} ({a.className || a.subject || 'Test'})
+                  </option>
+                ))}
+              </select>
+            )}
 
             {/* Status Filter Buttons */}
             <div style={{ display: 'flex', gap: '0.35rem', background: '#F1F5F9', padding: '0.25rem', borderRadius: '0.5rem', border: '1px solid #E2E8F0' }}>

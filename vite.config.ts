@@ -6,7 +6,10 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '/api': 'http://localhost:3001'
+      '/api': {
+        target: 'https://api.paatam.in',
+        changeOrigin: true
+      }
     }
   }
 })

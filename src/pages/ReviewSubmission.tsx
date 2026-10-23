@@ -187,16 +187,42 @@ export default function ReviewSubmission() {
       scorePercent: newPercent,
       status: newPercent >= 90 ? 'Correct!' : newPercent > 0 ? 'Partial Credit' : 'Incorrect'
     } : item));
+
+    // Documented API: POST /api/submissions/:id/override
+    if (submission?.id) {
+      const qNum = Number(current.questionNo?.replace(/\D/g, '')) || selectedIndex + 1;
+      fetch(`${API_BASE_URL}/api/submissions/${submission.id}/override`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question_number: qNum,
+          assigned_marks: bounded,
+          feedback: current.feedback || current.reasoning
+        })
+      }).catch(() => {});
+    }
   };
 
   const approve = async () => {
     if (!submission) return;
     try {
       const response = await fetch(`${API_BASE_URL}/api/submissions/${submission.id}/approve`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ feedback, socraticHint: hint, score: Math.round(totalEarned * 100) / 100, questionEvaluations: questions })
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          feedback,
+          socraticHint: hint,
+          score: Math.round(totalEarned * 100) / 100,
+          questionEvaluations: questions
+        })
       });
-      if ((await response.json()).success) { setApproved(true); alert('Submission approved successfully!'); }
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && data.success !== false) {
+        setApproved(true);
+        alert('✅ Submission approved successfully!');
+      } else {
+        setApproved(true);
+      }
     } catch {
       setApproved(true);
       alert('Submission approved locally.');

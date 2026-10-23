@@ -4,7 +4,6 @@ import {
   BookOpen,
   Sparkles,
   GraduationCap,
-  Trash2,
   CheckCircle2,
   Layers,
   BarChart3,
@@ -14,11 +13,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
-interface SidebarProps {
-  onClearDb?: () => void;
-}
-
-export default function Sidebar({ onClearDb }: SidebarProps) {
+export default function Sidebar() {
   const location = useLocation();
   const { role } = useAuth();
 
@@ -152,33 +147,13 @@ export default function Sidebar({ onClearDb }: SidebarProps) {
           )}
         </nav>
 
-        {/* Footer info & DB reset (Admin Only - Hidden for Student and Teacher) */}
+        {/* Footer info (Admin Only) */}
         {role === 'ADMIN' && (
           <div className="sidebar-footer">
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.75rem', color: '#94A3B8' }}>
               <CheckCircle2 className="size-3.5 text-emerald-400" />
               <span>6 AI Agents Active</span>
             </div>
-            {onClearDb && (
-              <button
-                onClick={onClearDb}
-                title="Reset all database submissions"
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  color: '#64748B',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  padding: '0.3rem',
-                  borderRadius: '0.375rem'
-                }}
-                onMouseOver={(e) => (e.currentTarget.style.color = '#EF4444')}
-                onMouseOut={(e) => (e.currentTarget.style.color = '#64748B')}
-              >
-                <Trash2 className="size-3.5" />
-              </button>
-            )}
           </div>
         )}
       </aside>

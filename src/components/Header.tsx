@@ -27,20 +27,6 @@ export default function Header() {
     }
   };
 
-  const handleClearDatabase = async () => {
-    if (confirm('Are you sure you want to clear all submission and evaluation data?')) {
-      try {
-        const res = await fetch('/api/clear', { method: 'DELETE' });
-        const data = await res.json();
-        alert(data.message || '✨ Database reset clean!');
-        window.location.reload();
-      } catch (err) {
-        console.error(err);
-        alert('Error resetting database.');
-      }
-    }
-  };
-
   return (
     <header className="markmate-header">
       <div className="header-inner">
@@ -114,9 +100,6 @@ export default function Header() {
           <span className="badge-pill badge-blue" style={{ background: 'rgba(59, 130, 246, 0.2)', color: '#93C5FD', border: '1px solid rgba(147, 197, 253, 0.3)' }}>
             ● Grade 11 - Sec A
           </span>
-          <button className="btn-header-action" onClick={handleClearDatabase} title="Reset database state">
-            🧹 Clear DB
-          </button>
         </div>
       </div>
     </header>

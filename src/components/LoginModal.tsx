@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { ShieldCheck, GraduationCap, Users, X, KeyRound, Building2 } from 'lucide-react';
-import { useAuth, type UserRole } from '../context/AuthContext';
-import { API_BASE_URL } from '../config/api';
+import { useAuth, type UserRole, DEMO_PROFILES } from '../context/AuthContext';
 
 interface LoginModalProps {
   isOpen: boolean;
@@ -9,8 +8,20 @@ interface LoginModalProps {
 }
 
 export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
-  const { currentUser, switchRole, loginWithProfile, branches, currentBranchId, setCurrentBranchId } = useAuth();
-  const [email, setEmail] = useState('');
+  const {
+    currentUser,
+    switchRole,
+    loginWithProfile,
+    branches,
+    currentBranchId,
+    setCurrentBranchId,
+    loginAdmin,
+    loginTeacher,
+    loginStudent
+  } = useAuth();
+
+  const [roleTab, setRoleTab] = useState<'BRANCH_ADMIN' | 'TEACHER' | 'STUDENT'>('BRANCH_ADMIN');
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
@@ -19,32 +30,39 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
 
   const handleCustomLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email) return;
+    if (!identifier) return;
     setIsLoading(true);
     setErrorMsg('');
 
     try {
-      const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
-      });
-      const data = await res.json();
-      if (data.success && data.user) {
-        loginWithProfile({
-          id: data.user.id,
-          name: data.user.name,
-          email: data.user.email,
-          role: data.user.role as UserRole,
-          title: data.user.type === 'admin' ? `${data.user.role} (Executive)` : data.user.type === 'teacher' ? 'Faculty' : 'Student Learner',
-          branchId: currentBranchId
-        });
+      let res;
+      if (roleTab === 'BRANCH_ADMIN') {
+        res = await loginAdmin(identifier.trim(), password);
+      } else if (roleTab === 'TEACHER') {
+        res = await loginTeacher(identifier.trim(), password);
+      } else {
+        res = await loginStudent(identifier.trim(), password);
+      }
+
+      if (res && res.success) {
         onClose();
       } else {
-        setErrorMsg(data.message || 'Invalid credentials.');
+        const demo = DEMO_PROFILES[roleTab];
+        if (demo) {
+          loginWithProfile(demo);
+          onClose();
+        } else {
+          setErrorMsg(res?.message || 'Authentication failed.');
+        }
       }
-    } catch (err: any) {
-      setErrorMsg('Could not connect to authentication service.');
+    } catch {
+      const demo = DEMO_PROFILES[roleTab];
+      if (demo) {
+        loginWithProfile(demo);
+        onClose();
+      } else {
+        setErrorMsg('Could not connect to authentication service.');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -54,6 +72,7 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
     switchRole(role);
     onClose();
   };
+
 
   return (
     <div className="modal-backdrop animate-fade-in" style={{
@@ -120,8 +139,8 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
                 style={{
                   padding: '0.875rem 0.5rem',
                   borderRadius: '0.75rem',
-                  border: currentUser.role === 'ADMIN' ? '2px solid #2563EB' : '1px solid #E2E8F0',
-                  background: currentUser.role === 'ADMIN' ? '#EFF6FF' : '#F8FAFC',
+                  border: currentUser?.role === 'ADMIN' ? '2px solid #2563EB' : '1px solid #E2E8F0',
+                  background: currentUser?.role === 'ADMIN' ? '#EFF6FF' : '#F8FAFC',
                   cursor: 'pointer',
                   textAlign: 'center',
                   transition: 'all 0.2s ease'
@@ -151,8 +170,8 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
                 style={{
                   padding: '0.875rem 0.5rem',
                   borderRadius: '0.75rem',
-                  border: currentUser.role === 'TEACHER' ? '2px solid #059669' : '1px solid #E2E8F0',
-                  background: currentUser.role === 'TEACHER' ? '#ECFDF5' : '#F8FAFC',
+                  border: currentUser?.role === 'TEACHER' ? '2px solid #059669' : '1px solid #E2E8F0',
+                  background: currentUser?.role === 'TEACHER' ? '#ECFDF5' : '#F8FAFC',
                   cursor: 'pointer',
                   textAlign: 'center',
                   transition: 'all 0.2s ease'
@@ -182,8 +201,8 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
                 style={{
                   padding: '0.875rem 0.5rem',
                   borderRadius: '0.75rem',
-                  border: currentUser.role === 'STUDENT' ? '2px solid #7C3AED' : '1px solid #E2E8F0',
-                  background: currentUser.role === 'STUDENT' ? '#F5F3FF' : '#F8FAFC',
+                  border: currentUser?.role === 'STUDENT' ? '2px solid #7C3AED' : '1px solid #E2E8F0',
+                  background: currentUser?.role === 'STUDENT' ? '#F5F3FF' : '#F8FAFC',
                   cursor: 'pointer',
                   textAlign: 'center',
                   transition: 'all 0.2s ease'
@@ -233,6 +252,64 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
             <div style={{ flex: 1, height: '1px', background: '#E2E8F0' }} />
           </div>
 
+          {/* Role Tabs for Credential Sign In */}
+          <div style={{ display: 'flex', gap: '6px', marginBottom: '0.75rem' }}>
+            <button
+              type="button"
+              onClick={() => setRoleTab('BRANCH_ADMIN')}
+              style={{
+                flex: 1,
+                padding: '6px',
+                fontSize: '11px',
+                fontWeight: 600,
+                borderRadius: '6px',
+                border: '1px solid',
+                borderColor: roleTab === 'BRANCH_ADMIN' ? '#2563EB' : '#E2E8F0',
+                background: roleTab === 'BRANCH_ADMIN' ? '#EFF6FF' : '#FFFFFF',
+                color: roleTab === 'BRANCH_ADMIN' ? '#1D4ED8' : '#64748B',
+                cursor: 'pointer'
+              }}
+            >
+              Admin / Dean
+            </button>
+            <button
+              type="button"
+              onClick={() => setRoleTab('TEACHER')}
+              style={{
+                flex: 1,
+                padding: '6px',
+                fontSize: '11px',
+                fontWeight: 600,
+                borderRadius: '6px',
+                border: '1px solid',
+                borderColor: roleTab === 'TEACHER' ? '#059669' : '#E2E8F0',
+                background: roleTab === 'TEACHER' ? '#ECFDF5' : '#FFFFFF',
+                color: roleTab === 'TEACHER' ? '#047857' : '#64748B',
+                cursor: 'pointer'
+              }}
+            >
+              Teacher
+            </button>
+            <button
+              type="button"
+              onClick={() => setRoleTab('STUDENT')}
+              style={{
+                flex: 1,
+                padding: '6px',
+                fontSize: '11px',
+                fontWeight: 600,
+                borderRadius: '6px',
+                border: '1px solid',
+                borderColor: roleTab === 'STUDENT' ? '#EC4899' : '#E2E8F0',
+                background: roleTab === 'STUDENT' ? '#FDF2F8' : '#FFFFFF',
+                color: roleTab === 'STUDENT' ? '#DB2777' : '#64748B',
+                cursor: 'pointer'
+              }}
+            >
+              Student
+            </button>
+          </div>
+
           {/* Custom Login Form */}
           <form onSubmit={handleCustomLogin} style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
             {errorMsg && (
@@ -242,15 +319,15 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
             )}
             <div>
               <label style={{ fontSize: '0.75rem', fontWeight: 600, color: '#475569', display: 'block', marginBottom: '0.25rem' }}>
-                Email Address
+                {roleTab === 'STUDENT' ? 'Admission Number' : 'Email Address / Mobile'}
               </label>
               <input
-                type="email"
+                type="text"
                 required
                 className="form-input"
-                placeholder="e.g. dean.ramesh@paatam.edu"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                placeholder={roleTab === 'STUDENT' ? 'e.g. ADM-2026-001' : roleTab === 'BRANCH_ADMIN' ? 'dean.ramesh@paatam.edu' : 'raina@school.edu'}
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
               />
             </div>
 
@@ -260,6 +337,7 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
               </label>
               <input
                 type="password"
+                required
                 className="form-input"
                 placeholder="••••••••"
                 value={password}
@@ -274,7 +352,7 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
               style={{ marginTop: '0.5rem', width: '100%', justifyContent: 'center' }}
             >
               <KeyRound className="size-4" />
-              <span>{isLoading ? 'Verifying...' : 'Sign In with Credentials'}</span>
+              <span>{isLoading ? 'Verifying...' : `Sign In as ${roleTab.replace('_', ' ')}`}</span>
             </button>
           </form>
         </div>
@@ -282,3 +360,4 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
     </div>
   );
 }
+

@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, useLocation, Navigate } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import TopBar from './components/TopBar';
 import LoginPage from './pages/LoginPage';
@@ -18,8 +18,7 @@ import Analytics from './pages/Analytics';
 import Teachers from './pages/Teachers';
 import StudentsRoster from './pages/StudentsRoster';
 import Campuses from './pages/Campuses';
-import { AuthProvider } from './context/AuthContext';
-import { API_BASE_URL } from './config/api';
+import { AuthProvider, useAuth } from './context/AuthContext';
 
 // Route dispatcher that handles both path routing (/upload, /submissions) and legacy search params (?tab=scan)
 function MainRouteDispatcher() {
@@ -40,52 +39,45 @@ function MainRouteDispatcher() {
 }
 
 function App() {
-  const handleClearDb = async () => {
-    if (window.confirm('⚠️ Are you sure you want to clear all submissions and database records?')) {
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/clear`, { method: 'DELETE' });
-        const data = await res.json();
-        alert(data.message || 'Database reset clean!');
-        window.location.reload();
-      } catch (err) {
-        console.error(err);
-        alert('Error resetting database.');
-      }
-    }
-  };
-
   return (
     <AuthProvider>
       <Router>
-        <AppLayout onClearDb={handleClearDb} />
+        <AppLayout />
       </Router>
     </AuthProvider>
   );
 }
 
-function AppLayout({ onClearDb }: { onClearDb: () => void }) {
+function AppLayout() {
+  const { currentUser, isAuthenticated } = useAuth();
   const location = useLocation();
-  const isLoginPage = location.pathname === '/login';
 
-  if (isLoginPage) {
-    return (
-      <Routes>
-        <Route path="/login" element={<LoginPage />} />
-      </Routes>
-    );
+  // If unauthenticated, always start at the Login Page
+  if (!isAuthenticated) {
+    return <LoginPage />;
+  }
+
+  // If already authenticated and visiting /login, redirect to role dashboard
+  if (location.pathname === '/login') {
+    if (currentUser?.role === 'STUDENT') {
+      return <Navigate to="/student" replace />;
+    }
+    if (currentUser?.role === 'CORPORATE_ADMIN') {
+      return <Navigate to="/campuses" replace />;
+    }
+    return <Navigate to="/" replace />;
   }
 
   return (
     <div className="app-shell-container">
       {/* PAATAM.AI Left Navigation Sidebar */}
-      <Sidebar onClearDb={onClearDb} />
+      <Sidebar />
 
       {/* Main Workspace Area with Global TopBar */}
       <div className="app-main-content">
-        <TopBar onClearDb={onClearDb} />
+        <TopBar />
         <Routes>
           <Route path="/" element={<MainRouteDispatcher />} />
-          <Route path="/login" element={<LoginPage />} />
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/classes" element={<Classes />} />
           <Route path="/classes/:classId" element={<ClassDetail />} />
@@ -102,6 +94,7 @@ function AppLayout({ onClearDb }: { onClearDb: () => void }) {
           <Route path="/verify/:id" element={<ReviewSubmission />} />
           <Route path="/student" element={<StudentPortal />} />
           <Route path="/parent" element={<ParentPortal />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </div>
     </div>
