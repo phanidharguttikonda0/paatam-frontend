@@ -1,32 +1,57 @@
-import { useEffect, useState } from 'react';
-import { 
-  BarChart3, 
-  TrendingUp, 
-  Users, 
-  FileCheck2, 
-  Sparkles, 
-  Search, 
-  CheckCircle2, 
-  AlertTriangle,
+import { useEffect, useMemo, useState } from 'react';
+import {
+  Users,
+  FileCheck2,
+  CheckCircle2,
+  TrendingUp,
+  BookOpen,
+  Search,
+  ChevronDown,
   ChevronRight,
-  X,
-  MessageSquare,
-  BookOpen
+  GraduationCap,
+  Info,
 } from 'lucide-react';
 import { API_BASE_URL } from '../config/api';
+import './Analytics.css';
+import SubjectAnalytics from './SubjectAnalytics';
+import './SubjectAnalytics.css';
+import StudentsList from './StudentsList';
+import LearningGapDetails from './LearningGapDetails';
+import StudentPerformanceDetails from './StudentPerformanceDetails';
 
-interface AnalyticsOverview {
+type GradeDistribution = {
+  A: number;
+  B: number;
+  C: number;
+  D: number;
+};
+
+type SubjectPerformance = {
+  subject: string;
+  papersEvaluated: number;
+  avgPercentage: number;
+};
+
+type AnalyticsOverview = {
   totalStudents: number;
   totalClasses: number;
   totalAssignments: number;
   totalSubmissions: number;
   avgScore: number;
   aiAccuracy: number;
-  gradeDistribution: { A: number; B: number; C: number; D: number };
-  subjectPerformance: { subject: string; papersEvaluated: number; avgPercentage: number }[];
-}
+  gradeDistribution: GradeDistribution;
+  subjectPerformance: SubjectPerformance[];
+};
 
-interface StudentAnalyticsItem {
+type RecentSubmission = {
+  id: string;
+  subject: string;
+  score: number;
+  maxScore: number;
+  submittedAt: string;
+};
+
+type StudentAnalyticsItem = {
   id: string;
   name: string;
   rollNumber: string;
@@ -40,435 +65,1211 @@ interface StudentAnalyticsItem {
   status: 'Excelling' | 'Average' | 'Needs Support' | 'No Tests';
   knowledgeGaps: string[];
   excelledAreas: string[];
-  recentSubmissions: {
-    id: string;
-    subject: string;
-    score: number;
-    maxScore: number;
-    submittedAt: string;
-  }[];
+  recentSubmissions: RecentSubmission[];
+};
+
+const DEMO_STUDENTS: StudentAnalyticsItem[] = [
+  {
+    id: 'demo-student-1',
+    name: 'Aarav Sharma',
+    rollNumber: '101',
+    admissionNo: 'PA-DEMO-001',
+    className: 'Class 8',
+    sectionName: 'A',
+    parentName: 'Rajesh Sharma',
+    parentPhone: 'Demo contact',
+    testsTaken: 5,
+    avgPercentage: 88,
+    status: 'Excelling',
+    knowledgeGaps: ['Fractions and decimals'],
+    excelledAreas: ['Science', 'Mathematics'],
+    recentSubmissions: [
+      {
+        id: 'demo-sub-1',
+        subject: 'Mathematics',
+        score: 45,
+        maxScore: 50,
+        submittedAt: '2026-10-20',
+      },
+      {
+        id: 'demo-sub-2',
+        subject: 'Science',
+        score: 44,
+        maxScore: 50,
+        submittedAt: '2026-10-17',
+      },
+    ],
+  },
+  {
+    id: 'demo-student-2',
+    name: 'Ananya Reddy',
+    rollNumber: '102',
+    admissionNo: 'PA-DEMO-002',
+    className: 'Class 8',
+    sectionName: 'A',
+    parentName: 'Suresh Reddy',
+    parentPhone: 'Demo contact',
+    testsTaken: 4,
+    avgPercentage: 72,
+    status: 'Average',
+    knowledgeGaps: ['Algebraic expressions', 'Grammar'],
+    excelledAreas: ['Social Studies'],
+    recentSubmissions: [
+      {
+        id: 'demo-sub-3',
+        subject: 'Mathematics',
+        score: 34,
+        maxScore: 50,
+        submittedAt: '2026-10-21',
+      },
+      {
+        id: 'demo-sub-4',
+        subject: 'English',
+        score: 38,
+        maxScore: 50,
+        submittedAt: '2026-10-18',
+      },
+    ],
+  },
+  {
+    id: 'demo-student-3',
+    name: 'Vihaan Kumar',
+    rollNumber: '103',
+    admissionNo: 'PA-DEMO-003',
+    className: 'Class 8',
+    sectionName: 'B',
+    parentName: 'Ramesh Kumar',
+    parentPhone: 'Demo contact',
+    testsTaken: 6,
+    avgPercentage: 94,
+    status: 'Excelling',
+    knowledgeGaps: [],
+    excelledAreas: ['Mathematics', 'Science', 'Computer'],
+    recentSubmissions: [
+      { id: 'demo-sub-5', subject: 'Computer', score: 48, maxScore: 50, submittedAt: '2026-10-24' },
+      { id: 'demo-sub-6', subject: 'Mathematics', score: 47, maxScore: 50, submittedAt: '2026-10-22' },
+    ],
+  },
+  {
+    id: 'demo-student-4',
+    name: 'Saanvi Reddy',
+    rollNumber: '104',
+    admissionNo: 'PA-DEMO-004',
+    className: 'Class 8',
+    sectionName: 'B',
+    parentName: 'Prakash Reddy',
+    parentPhone: 'Demo contact',
+    testsTaken: 5,
+    avgPercentage: 81,
+    status: 'Excelling',
+    knowledgeGaps: ['Geometry'],
+    excelledAreas: ['English', 'Science'],
+    recentSubmissions: [
+      { id: 'demo-sub-7', subject: 'English', score: 43, maxScore: 50, submittedAt: '2026-10-25' },
+      { id: 'demo-sub-8', subject: 'Science', score: 40, maxScore: 50, submittedAt: '2026-10-19' },
+    ],
+  },
+  {
+    id: 'demo-student-5',
+    name: 'Arjun Varma',
+    rollNumber: '105',
+    admissionNo: 'PA-DEMO-005',
+    className: 'Class 9',
+    sectionName: 'A',
+    parentName: 'Srinivas Varma',
+    parentPhone: 'Demo contact',
+    testsTaken: 4,
+    avgPercentage: 64,
+    status: 'Average',
+    knowledgeGaps: ['Algebra', 'Physics fundamentals'],
+    excelledAreas: ['Social Studies'],
+    recentSubmissions: [
+      { id: 'demo-sub-9', subject: 'Mathematics', score: 29, maxScore: 50, submittedAt: '2026-10-23' },
+      { id: 'demo-sub-10', subject: 'Social Studies', score: 36, maxScore: 50, submittedAt: '2026-10-20' },
+    ],
+  },
+  {
+    id: 'demo-student-6',
+    name: 'Diya Sharma',
+    rollNumber: '106',
+    admissionNo: 'PA-DEMO-006',
+    className: 'Class 9',
+    sectionName: 'A',
+    parentName: 'Amit Sharma',
+    parentPhone: 'Demo contact',
+    testsTaken: 3,
+    avgPercentage: 48,
+    status: 'Needs Support',
+    knowledgeGaps: ['Fractions', 'Grammar', 'Basic science concepts'],
+    excelledAreas: ['Art'],
+    recentSubmissions: [
+      { id: 'demo-sub-11', subject: 'English', score: 22, maxScore: 50, submittedAt: '2026-10-21' },
+      { id: 'demo-sub-12', subject: 'Mathematics', score: 24, maxScore: 50, submittedAt: '2026-10-16' },
+    ],
+  },
+  {
+    id: 'demo-student-7',
+    name: 'Ishaan Patel',
+    rollNumber: '107',
+    admissionNo: 'PA-DEMO-007',
+    className: 'Class 10',
+    sectionName: 'A',
+    parentName: 'Kiran Patel',
+    parentPhone: 'Demo contact',
+    testsTaken: 0,
+    avgPercentage: 0,
+    status: 'No Tests',
+    knowledgeGaps: [],
+    excelledAreas: [],
+    recentSubmissions: [],
+  },
+  {
+    id: 'demo-student-8',
+    name: 'Mira Nair',
+    rollNumber: '108',
+    admissionNo: 'PA-DEMO-008',
+    className: 'Class 10',
+    sectionName: 'B',
+    parentName: 'Deepak Nair',
+    parentPhone: 'Demo contact',
+    testsTaken: 5,
+    avgPercentage: 57,
+    status: 'Average',
+    knowledgeGaps: ['Chemical equations', 'Reading comprehension'],
+    excelledAreas: ['Computer'],
+    recentSubmissions: [
+      { id: 'demo-sub-13', subject: 'Computer', score: 41, maxScore: 50, submittedAt: '2026-10-26' },
+      { id: 'demo-sub-14', subject: 'Science', score: 27, maxScore: 50, submittedAt: '2026-10-18' },
+    ],
+  },
+];
+
+const DEFAULT_OVERVIEW: AnalyticsOverview = {
+  totalStudents: 0,
+  totalClasses: 0,
+  totalAssignments: 0,
+  totalSubmissions: 0,
+  avgScore: 0,
+  aiAccuracy: 0,
+  gradeDistribution: { A: 0, B: 0, C: 0, D: 0 },
+  subjectPerformance: [],
+};
+
+// Clearly illustrative fallback values used only when the analytics API has no student data.
+const DEMO_OVERVIEW: AnalyticsOverview = {
+  totalStudents: 8,
+  totalClasses: 3,
+  totalAssignments: 12,
+  totalSubmissions: 30,
+  avgScore: 72,
+  aiAccuracy: 96,
+  gradeDistribution: { A: 2, B: 3, C: 2, D: 1 },
+  subjectPerformance: [
+    { subject: 'Mathematics', papersEvaluated: 12, avgPercentage: 76 },
+    { subject: 'Science', papersEvaluated: 10, avgPercentage: 81 },
+    { subject: 'English', papersEvaluated: 9, avgPercentage: 74 },
+    { subject: 'Social Studies', papersEvaluated: 8, avgPercentage: 69 },
+    { subject: 'Computer', papersEvaluated: 7, avgPercentage: 88 },
+  ],
+};
+
+const SAMPLE_SUBJECTS = [
+  { subject: 'Mathematics', score: 82, color: 'purple' },
+  { subject: 'Science', score: 76, color: 'green' },
+  { subject: 'English', score: 88, color: 'orange' },
+  { subject: 'Social Studies', score: 71, color: 'blue' },
+  { subject: 'Computer', score: 91, color: 'pink' },
+];
+
+const TREND_VALUES = [58, 62, 68, 72];
+const TREND_LABELS = ['Unit Test 1', 'Unit Test 2', 'Unit Test 3', 'Midterm'];
+
+const COHORTS = [
+  {
+    title: 'High Performers',
+    students: 32,
+    percentage: 26,
+    average: 89,
+    description: 'Consistently scoring above 85%',
+    color: 'purple',
+  },
+  {
+    title: 'Steady Learners',
+    students: 48,
+    percentage: 40,
+    average: 74,
+    description: 'Performing within expected range',
+    color: 'green',
+  },
+  {
+    title: 'Needs Attention',
+    students: 28,
+    percentage: 23,
+    average: 58,
+    description: 'May benefit from extra support',
+    color: 'orange',
+  },
+  {
+    title: 'At Risk',
+    students: 13,
+    percentage: 11,
+    average: 42,
+    description: 'Requires targeted intervention',
+    color: 'red',
+  },
+];
+
+const formatScore = (score: number) =>
+  `${Math.round(Number.isFinite(score) ? score : 0)}%`;
+
+function createTrendPoints(values: number[]) {
+  const width = 600;
+  const height = 190;
+  const left = 36;
+  const right = 12;
+  const top = 14;
+  const bottom = 20;
+  const chartWidth = width - left - right;
+  const chartHeight = height - top - bottom;
+
+  const points = values.map((value, index) => ({
+    x: left + (index / Math.max(values.length - 1, 1)) * chartWidth,
+    y: top + ((100 - value) / 100) * chartHeight,
+    value,
+  }));
+
+  return {
+    points,
+    line: points.map((point) => `${point.x},${point.y}`).join(' '),
+    area: `${left},${height - bottom} ${points
+      .map((point) => `${point.x},${point.y}`)
+      .join(' ')} ${width - right},${height - bottom}`,
+  };
 }
 
-export default function Analytics() {
-  const [overview, setOverview] = useState<AnalyticsOverview | null>(null);
+interface AnalyticsProps {
+  initialView?: 'analytics' | 'studentsList';
+}
+
+export default function Analytics({ initialView = 'analytics' }: AnalyticsProps) {
+  const [currentView, setCurrentView] = useState<'analytics' | 'studentsList' | 'learningGaps'>(initialView);
+
+  const [overview, setOverview] = useState<AnalyticsOverview>(DEFAULT_OVERVIEW);
   const [students, setStudents] = useState<StudentAnalyticsItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedClass, setSelectedClass] = useState('ALL');
-  const [selectedStudent, setSelectedStudent] = useState<StudentAnalyticsItem | null>(null);
+  const [apiError, setApiError] = useState(false);
+
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedClass, setSelectedClass] = useState('All Classes');
+  const [selectedSection, setSelectedSection] = useState('All Sections');
+  const [selectedSubject, setSelectedSubject] = useState('All Subjects');
+  const [selectedAssessment, setSelectedAssessment] = useState('All Assessments');
+  const [selectedPeriod, setSelectedPeriod] = useState('This Term');
+  const [academicYear, setAcademicYear] = useState('2025–2026');
+
+
+  type SelectedStudent = {
+    id?: string;
+    name?: string;
+    rollNumber?: string;
+    admissionNo?: string;
+    className?: string;
+    sectionName?: string;
+    avgPercentage?: number;
+    recentSubmissions?: Array<{
+      id: string;
+      subject: string;
+      score: number;
+      maxScore: number;
+      submittedAt: string;
+    }>;
+  };
+
+  const [selectedStudent, setSelectedStudent] =
+    useState<SelectedStudent | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [currentPage, setCurrentPage] = useState(1);
+
+  const pageSize = 5;
 
   useEffect(() => {
-    setIsLoading(true);
-    Promise.all([
-      fetch(`${API_BASE_URL}/api/analytics/overview`).then(r => r.json()).catch(() => null),
-      fetch(`${API_BASE_URL}/api/analytics/students`).then(r => r.json()).catch(() => null)
-    ]).then(([overviewData, studentsData]) => {
-      if (overviewData?.success && overviewData.stats) {
-        setOverview(overviewData.stats);
+    let cancelled = false;
+
+    async function loadAnalytics() {
+      setIsLoading(true);
+      setApiError(false);
+
+      try {
+        const queryParams = new URLSearchParams({
+          year: academicYear,
+          ...(selectedClass !== 'All Classes' && { class: selectedClass }),
+          ...(selectedSection !== 'All Sections' && { section: selectedSection }),
+          period: selectedPeriod,
+        });
+
+        const [overviewResponse, studentsResponse] = await Promise.all([
+          fetch(`${API_BASE_URL}/api/analytics/overview?${queryParams.toString()}`),
+          fetch(`${API_BASE_URL}/api/analytics/students?${queryParams.toString()}`),
+        ]);
+
+        let overviewData: any = null;
+        let studentsData: any = null;
+
+        try {
+          overviewData = await overviewResponse.json();
+        } catch {
+          overviewData = null;
+        }
+
+        try {
+          studentsData = await studentsResponse.json();
+        } catch {
+          studentsData = null;
+        }
+
+        if (cancelled) return;
+
+        if (
+          overviewResponse.ok &&
+          overviewData?.success &&
+          overviewData?.stats
+        ) {
+          setOverview({
+            ...DEFAULT_OVERVIEW,
+            ...overviewData.stats,
+            gradeDistribution: {
+              ...DEFAULT_OVERVIEW.gradeDistribution,
+              ...overviewData.stats.gradeDistribution,
+            },
+            subjectPerformance: Array.isArray(
+              overviewData.stats.subjectPerformance,
+            )
+              ? overviewData.stats.subjectPerformance
+              : [],
+          });
+        } else {
+          setApiError(true);
+        }
+
+        if (
+          studentsResponse.ok &&
+          studentsData?.success &&
+          Array.isArray(studentsData.students)
+        ) {
+          setStudents(studentsData.students);
+        } else {
+          setStudents([]);
+          setApiError(true);
+        }
+      } catch {
+        if (!cancelled) {
+          setApiError(true);
+          setStudents([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
       }
-      if (studentsData?.success && Array.isArray(studentsData.students)) {
-        setStudents(studentsData.students);
-      }
-    }).finally(() => {
-      setIsLoading(false);
+    }
+
+    void loadAnalytics();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [academicYear, selectedClass, selectedSection, selectedPeriod]);
+
+  const isUsingDemoData = students.length === 0;
+  const displayedStudents = isUsingDemoData ? DEMO_STUDENTS : students;
+  const displayedOverview = isUsingDemoData ? DEMO_OVERVIEW : overview;
+
+  const classOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          displayedStudents
+            .map((student) => student.className)
+            .filter(Boolean),
+        ),
+      ).sort(),
+    [displayedStudents],
+  );
+
+  const sectionOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          displayedStudents
+            .filter(
+              (student) =>
+                selectedClass === 'All Classes' ||
+                student.className === selectedClass,
+            )
+            .map((student) => student.sectionName)
+            .filter(Boolean),
+        ),
+      ).sort(),
+    [displayedStudents, selectedClass],
+  );
+
+  const subjectOptions = useMemo(() => {
+    const liveSubjects = displayedOverview.subjectPerformance
+      .map((subject) => subject.subject)
+      .filter(Boolean);
+
+    return liveSubjects.length
+      ? liveSubjects
+      : SAMPLE_SUBJECTS.map((subject) => subject.subject);
+  }, [displayedOverview.subjectPerformance]);
+
+  const filteredStudents = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+
+    return displayedStudents.filter((student) => {
+      const matchesSearch =
+        !query ||
+        student.name?.toLowerCase().includes(query) ||
+        student.rollNumber?.toLowerCase().includes(query) ||
+        student.admissionNo?.toLowerCase().includes(query);
+
+      const matchesClass =
+        selectedClass === 'All Classes' ||
+        student.className === selectedClass;
+
+      const matchesSection =
+        selectedSection === 'All Sections' ||
+        student.sectionName === selectedSection;
+
+      const matchesSubject =
+        selectedSubject === 'All Subjects' ||
+        student.recentSubmissions.some(
+          (submission) => submission.subject === selectedSubject,
+        );
+
+      const matchesAssessment =
+        selectedAssessment === 'All Assessments' ||
+        student.recentSubmissions.length > 0;
+
+      return (
+        matchesSearch &&
+        matchesClass &&
+        matchesSection &&
+        matchesSubject &&
+        matchesAssessment
+      );
     });
-  }, []);
+  }, [
+    displayedStudents,
+    searchTerm,
+    selectedClass,
+    selectedSection,
+    selectedSubject,
+    selectedAssessment,
+  ]);
 
-  // Filter students by search and class
-  const filteredStudents = students.filter(st => {
-    const matchesSearch = st.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          st.rollNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          st.admissionNo.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesClass = selectedClass === 'ALL' || st.className === selectedClass;
-    return matchesSearch && matchesClass;
-  });
+  const totalPages = Math.max(
+    1,
+    Math.ceil(filteredStudents.length / pageSize),
+  );
+  const safePage = Math.min(currentPage, totalPages);
 
-  const uniqueClasses = Array.from(new Set(students.map(s => s.className).filter(Boolean)));
+  const paginatedStudents = filteredStudents.slice(
+    (safePage - 1) * pageSize,
+    safePage * pageSize,
+  );
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [
+    searchTerm,
+    selectedClass,
+    selectedSection,
+    selectedSubject,
+    selectedAssessment,
+    selectedPeriod,
+    academicYear,
+  ]);
+
+  const trend = useMemo(() => createTrendPoints(TREND_VALUES), []);
+
+  const subjectChartData = useMemo(() => {
+    if (displayedOverview.subjectPerformance.length > 0) {
+      return displayedOverview.subjectPerformance.map((subject, index) => ({
+        subject: subject.subject,
+        score: Math.round(subject.avgPercentage || 0),
+        color: SAMPLE_SUBJECTS[index % SAMPLE_SUBJECTS.length].color,
+      }));
+    }
+
+    return SAMPLE_SUBJECTS;
+  }, [displayedOverview.subjectPerformance]);
+
+  const totalStudents = displayedOverview.totalStudents || displayedStudents.length;
+  const totalAssignments = displayedOverview.totalAssignments;
+  const totalSubmissions = displayedOverview.totalSubmissions;
+  const averageScore = displayedOverview.avgScore;
+
+  function toggleStudent(studentId: string) {
+    setSelectedIds((previous) =>
+      previous.includes(studentId)
+        ? previous.filter((id) => id !== studentId)
+        : [...previous, studentId],
+    );
+  }
+
+  function toggleAllVisible() {
+    const visibleIds = paginatedStudents.map((student) => student.id);
+    const allSelected =
+      visibleIds.length > 0 &&
+      visibleIds.every((id) => selectedIds.includes(id));
+
+    setSelectedIds((previous) =>
+      allSelected
+        ? previous.filter((id) => !visibleIds.includes(id))
+        : Array.from(new Set([...previous, ...visibleIds])),
+    );
+  }
+
+  if (currentView === 'studentsList') {
+    return (
+      <StudentsList
+        students={displayedStudents}
+        onBack={() => setCurrentView('analytics')}
+        onSelectStudent={(student) => setSelectedStudent(student)}
+      />
+    );
+  }
+
+  if (selectedStudent) {
+    return (
+      <StudentPerformanceDetails
+        student={selectedStudent}
+        subject={selectedSubject}
+        isClassTeacher={false}
+        onNavigateToAnalytics={() => {
+          setSelectedStudent(null);
+          setSelectedSubject('All Subjects');
+          setCurrentView('analytics');
+        }}
+        onNavigateToSubjectAnalytics={() => {
+          setSelectedStudent(null);
+          setCurrentView('analytics');
+        }}
+      />
+    );
+  }
+
+  if (currentView === 'learningGaps') {
+    return (
+      <LearningGapDetails
+        subject={selectedSubject === 'All Subjects' ? 'Mathematics' : selectedSubject}
+        onBack={() => setCurrentView('analytics')}
+      />
+    );
+  }
 
   return (
-    <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
-      {/* Top Bar */}
-      <header className="page-top-bar no-print">
-        <div className="page-top-bar-text">
-          <h1>Student & Cohort Analytics</h1>
-          <p>Real-time performance diagnostics, AI knowledge gap discovery, and grade distribution</p>
+    <div className="analytics-page">
+      {/* Renders header and filters on both main analytics and subject analytics views */}
+      {currentView === 'analytics' && (
+        <header className="analytics-page-header">
+          <div className="analytics-page-heading">
+            <h1>Student Analytics</h1>
+            <p>
+              Overview of student performance for your classes and subjects.
+            </p>
+          </div>
+
+          <section
+            className="analytics-filters"
+            aria-label="Analytics filters"
+          >
+            <label className="analytics-filter">
+              <span>Academic Year</span>
+              <div className="analytics-select-wrap">
+                <select
+                  value={academicYear}
+                  onChange={(event) => setAcademicYear(event.target.value)}
+                >
+                  <option>2025–2026</option>
+                  <option>2026–2027</option>
+                  <option>2024–2025</option>
+                </select>
+                <ChevronDown size={15} />
+              </div>
+            </label>
+
+            <label className="analytics-filter">
+              <span>Class</span>
+              <div className="analytics-select-wrap">
+                <select
+                  value={selectedClass}
+                  onChange={(event) => {
+                    setSelectedClass(event.target.value);
+                    setSelectedSection('All Sections');
+                  }}
+                >
+                  <option>All Classes</option>
+                  {classOptions.map((className) => (
+                    <option key={className}>{className}</option>
+                  ))}
+                </select>
+                <ChevronDown size={15} />
+              </div>
+            </label>
+
+            <label className="analytics-filter">
+              <span>Section</span>
+              <div className="analytics-select-wrap">
+                <select
+                  value={selectedSection}
+                  onChange={(event) => setSelectedSection(event.target.value)}
+                >
+                  <option>All Sections</option>
+                  {sectionOptions.map((section) => (
+                    <option key={section}>{section}</option>
+                  ))}
+                </select>
+                <ChevronDown size={15} />
+              </div>
+            </label>
+
+            <label className="analytics-filter">
+              <span>Subject</span>
+              <div className="analytics-select-wrap">
+                <select
+                  value={selectedSubject}
+                  onChange={(event) => setSelectedSubject(event.target.value)}
+                >
+                  <option>All Subjects</option>
+                  {subjectOptions.map((subject) => (
+                    <option key={subject}>{subject}</option>
+                  ))}
+                </select>
+                <ChevronDown size={15} />
+              </div>
+            </label>
+
+            <label className="analytics-filter">
+              <span>Assessment</span>
+              <div className="analytics-select-wrap">
+                <select
+                  value={selectedAssessment}
+                  onChange={(event) => setSelectedAssessment(event.target.value)}
+                >
+                  <option>All Assessments</option>
+                  <option>Completed Assessments</option>
+                </select>
+                <ChevronDown size={15} />
+              </div>
+            </label>
+
+            <label className="analytics-filter">
+              <span>Period</span>
+              <div className="analytics-select-wrap">
+                <select
+                  value={selectedPeriod}
+                  onChange={(event) => setSelectedPeriod(event.target.value)}
+                >
+                  <option>This Term</option>
+                  <option>This Month</option>
+                  <option>Last 30 Days</option>
+                  <option>This Year</option>
+                </select>
+                <ChevronDown size={15} />
+              </div>
+            </label>
+          </section>
+        </header>
+      )}
+
+      {isLoading && (
+        <div className="analytics-loading">
+          <span className="analytics-spinner" />
+          Loading student analytics…
         </div>
-      </header>
-
-      <div className="page-container">
-        {/* KPI Summary Cards */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
-          {/* Card 1 */}
-          <div className="m-card" style={{ padding: '1.25rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            <div style={{ width: '48px', height: '48px', borderRadius: '10px', background: '#EFF6FF', color: '#2563EB', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Users className="size-6" />
-            </div>
-            <div>
-              <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' }}>Total Enrolled</div>
-              <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#0F172A' }}>{overview?.totalStudents || students.length || 0}</div>
-            </div>
-          </div>
-
-          {/* Card 2 */}
-          <div className="m-card" style={{ padding: '1.25rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            <div style={{ width: '48px', height: '48px', borderRadius: '10px', background: '#ECFDF5', color: '#059669', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <TrendingUp className="size-6" />
-            </div>
-            <div>
-              <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' }}>Average Score</div>
-              <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#0F172A' }}>{overview?.avgScore != null ? `${overview.avgScore}%` : '—'}</div>
-            </div>
-          </div>
-
-          {/* Card 3 */}
-          <div className="m-card" style={{ padding: '1.25rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            <div style={{ width: '48px', height: '48px', borderRadius: '10px', background: '#F5F3FF', color: '#7C3AED', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <FileCheck2 className="size-6" />
-            </div>
-            <div>
-              <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' }}>Papers Evaluated</div>
-              <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#0F172A' }}>{overview?.totalSubmissions || 0}</div>
-            </div>
-          </div>
-
-          {/* Card 4 */}
-          <div className="m-card" style={{ padding: '1.25rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            <div style={{ width: '48px', height: '48px', borderRadius: '10px', background: '#FEF3C7', color: '#D97706', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Sparkles className="size-6" />
-            </div>
-            <div>
-              <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' }}>AI Grading Accuracy</div>
-              <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#0F172A' }}>{overview?.aiAccuracy != null ? `${overview.aiAccuracy}%` : '—'}</div>
-            </div>
-          </div>
+      )}
+      {!isLoading && apiError && (
+        <div className="analytics-error" role="alert">
+          Unable to load some live analytics data. Please check the connection.
+          Demo records may be displayed where live data is unavailable.
         </div>
+      )}
 
-        {/* Grade Distribution & Subject Mastery */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem', marginBottom: '1.5rem' }}>
-          {/* Grade Distribution Card */}
-          <div className="m-card" style={{ padding: '1.25rem' }}>
-            <div className="m-card-header" style={{ marginBottom: '1rem' }}>
-              <h3 className="m-card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <BarChart3 className="size-4 text-blue-600" />
-                <span>Grade Distribution Across Cohorts</span>
-              </h3>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.875rem' }}>
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8125rem', marginBottom: '0.25rem' }}>
-                  <span style={{ fontWeight: 600, color: '#059669' }}>Grade A (&ge; 80%)</span>
-                  <span style={{ fontWeight: 700 }}>{overview?.gradeDistribution.A || 0} students</span>
+      {selectedSubject === 'All Subjects' ? (
+        <>
+          <section
+            className="analytics-kpis"
+            aria-label="Key performance indicators"
+          >
+            <article className="analytics-kpi analytics-kpi-green">
+              <div className="analytics-kpi-top">
+                <div className="analytics-kpi-icon">
+                  <Users size={18} />
                 </div>
-                <div style={{ height: '8px', background: '#E2E8F0', borderRadius: '999px', overflow: 'hidden' }}>
-                  <div style={{ width: `${Math.min(100, ((overview?.gradeDistribution.A || 0) / Math.max(1, overview?.totalSubmissions || 1)) * 100)}%`, height: '100%', background: '#10B981' }} />
+                <span className="analytics-kpi-tag">Enrollment</span>
+              </div>
+              <div className="analytics-kpi-label">Total Students</div>
+              <div className="analytics-kpi-value">
+                {isLoading ? '—' : totalStudents.toLocaleString()}
+              </div>
+              <div className="analytics-kpi-caption">
+                Students in roster
+              </div>
+            </article>
+
+            <article className="analytics-kpi analytics-kpi-blue">
+              <div className="analytics-kpi-top">
+                <div className="analytics-kpi-icon">
+                  <FileCheck2 size={18} />
                 </div>
+                <span className="analytics-kpi-tag">Assessments</span>
+              </div>
+              <div className="analytics-kpi-label">Assessments Assigned</div>
+              <div className="analytics-kpi-value">
+                {isLoading
+                  ? '—'
+                  : totalAssignments > 0
+                    ? totalAssignments.toLocaleString()
+                    : '—'}
+              </div>
+              <div className="analytics-kpi-caption">
+                {totalAssignments > 0 ? 'Reported by API' : 'Awaiting live data'}
+              </div>
+            </article>
+
+            <article className="analytics-kpi analytics-kpi-orange">
+              <div className="analytics-kpi-top">
+                <div className="analytics-kpi-icon">
+                  <CheckCircle2 size={18} />
+                </div>
+                <span className="analytics-kpi-tag">Submissions</span>
+              </div>
+              <div className="analytics-kpi-label">Submitted Assessments</div>
+              <div className="analytics-kpi-value">
+                {isLoading ? '—' : totalSubmissions.toLocaleString()}
+              </div>
+              <div className="analytics-kpi-caption">
+                Total recorded submissions
+              </div>
+            </article>
+
+            <article className="analytics-kpi analytics-kpi-purple">
+              <div className="analytics-kpi-top">
+                <div className="analytics-kpi-icon">
+                  <TrendingUp size={18} />
+                </div>
+                <span className="analytics-kpi-tag">Performance</span>
+              </div>
+              <div className="analytics-kpi-label">Class Average Score</div>
+              <div className="analytics-kpi-value">
+                {isLoading ? '—' : formatScore(averageScore)}
+              </div>
+              <div className="analytics-kpi-caption">
+                {isUsingDemoData ? 'Illustrative demo average' : 'Reported average'}
+              </div>
+            </article>
+          </section>
+
+          <section className="analytics-chart-grid">
+            <article className="analytics-panel analytics-trend-panel">
+              <div className="analytics-panel-heading">
+                <div>
+                  <h2>Class Performance Trend</h2>
+                  <p>Average score across completed assessments</p>
+                </div>
+                <span className="analytics-icon-button" title="Illustrative trend">
+                  <TrendingUp size={18} />
+                </span>
               </div>
 
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8125rem', marginBottom: '0.25rem' }}>
-                  <span style={{ fontWeight: 600, color: '#2563EB' }}>Grade B (60% - 79%)</span>
-                  <span style={{ fontWeight: 700 }}>{overview?.gradeDistribution.B || 0} students</span>
-                </div>
-                <div style={{ height: '8px', background: '#E2E8F0', borderRadius: '999px', overflow: 'hidden' }}>
-                  <div style={{ width: `${Math.min(100, ((overview?.gradeDistribution.B || 0) / Math.max(1, overview?.totalSubmissions || 1)) * 100)}%`, height: '100%', background: '#3B82F6' }} />
-                </div>
+              <div className="analytics-trend-summary">
+                <strong>Assessment performance</strong>
+                <span className="analytics-illustrative-label">
+                  <Info size={14} />
+                  Illustrative data
+                </span>
               </div>
 
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8125rem', marginBottom: '0.25rem' }}>
-                  <span style={{ fontWeight: 600, color: '#D97706' }}>Grade C (40% - 59%)</span>
-                  <span style={{ fontWeight: 700 }}>{overview?.gradeDistribution.C || 0} students</span>
+              <div className="analytics-line-chart">
+                <div className="analytics-y-axis">
+                  <span>100%</span>
+                  <span>75%</span>
+                  <span>50%</span>
+                  <span>25%</span>
+                  <span>0%</span>
                 </div>
-                <div style={{ height: '8px', background: '#E2E8F0', borderRadius: '999px', overflow: 'hidden' }}>
-                  <div style={{ width: `${Math.min(100, ((overview?.gradeDistribution.C || 0) / Math.max(1, overview?.totalSubmissions || 1)) * 100)}%`, height: '100%', background: '#F59E0B' }} />
+
+                <svg
+                  className="analytics-trend-svg"
+                  viewBox="0 0 600 190"
+                  preserveAspectRatio="none"
+                  role="img"
+                  aria-label="Illustrative assessment averages"
+                >
+                  <defs>
+                    <linearGradient
+                      id="analyticsTrendFill"
+                      x1="0"
+                      y1="0"
+                      x2="0"
+                      y2="1"
+                    >
+                      <stop offset="0%" stopColor="#36b98b" stopOpacity="0.32" />
+                      <stop offset="100%" stopColor="#36b98b" stopOpacity="0.06" />
+                    </linearGradient>
+                  </defs>
+
+                  {[14, 53, 92, 131, 170].map((y) => (
+                    <line
+                      key={y}
+                      x1="36"
+                      y1={y}
+                      x2="588"
+                      y2={y}
+                      className="analytics-grid-line"
+                    />
+                  ))}
+
+                  <polygon points={trend.area} fill="url(#analyticsTrendFill)" />
+
+                  <polyline
+                    points={trend.line}
+                    fill="none"
+                    stroke="#159b78"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+
+                  {trend.points.map((point, index) => (
+                    <g key={`${point.x}-${index}`}>
+                      <circle
+                        cx={point.x}
+                        cy={point.y}
+                        r="4.5"
+                        fill="#159b78"
+                        stroke="#ffffff"
+                        strokeWidth="2"
+                      />
+                      <text
+                        x={point.x}
+                        y={point.y - 12}
+                        textAnchor="middle"
+                        fill="#14785f"
+                        fontSize="11"
+                        fontWeight="700"
+                      >
+                        {point.value}%
+                      </text>
+                    </g>
+                  ))}
+                </svg>
+
+                <div className="analytics-x-axis">
+                  {TREND_LABELS.map((label) => (
+                    <span key={label}>{label}</span>
+                  ))}
                 </div>
+              </div>
+            </article>
+
+            <article className="analytics-panel analytics-subject-panel">
+              <div className="analytics-panel-heading">
+                <div>
+                  <h2>Subject-wise Average Score</h2>
+                  <p>Performance comparison by subject</p>
+                </div>
+                <span className="analytics-sample-badge">
+                  {isUsingDemoData ? 'Demo data' : 'Live data'}
+                </span>
               </div>
 
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8125rem', marginBottom: '0.25rem' }}>
-                  <span style={{ fontWeight: 600, color: '#DC2626' }}>Grade D (&lt; 40% - Needs Support)</span>
-                  <span style={{ fontWeight: 700 }}>{overview?.gradeDistribution.D || 0} students</span>
-                </div>
-                <div style={{ height: '8px', background: '#E2E8F0', borderRadius: '999px', overflow: 'hidden' }}>
-                  <div style={{ width: `${Math.min(100, ((overview?.gradeDistribution.D || 0) / Math.max(1, overview?.totalSubmissions || 1)) * 100)}%`, height: '100%', background: '#EF4444' }} />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Subject Mastery Card */}
-          <div className="m-card" style={{ padding: '1.25rem' }}>
-            <div className="m-card-header" style={{ marginBottom: '1rem' }}>
-              <h3 className="m-card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <BookOpen className="size-4 text-emerald-600" />
-                <span>Subject Mastery Index</span>
-              </h3>
-            </div>
-            {(!overview?.subjectPerformance || overview.subjectPerformance.length === 0) ? (
-              <div style={{ padding: '2rem 1rem', textAlign: 'center', color: '#94A3B8', fontSize: '0.875rem' }}>
-                Deploy and grade question papers to populate subject mastery metrics.
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.875rem' }}>
-                {overview.subjectPerformance.map(subj => (
-                  <div key={subj.subject}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8125rem', marginBottom: '0.25rem' }}>
-                      <span style={{ fontWeight: 600, color: '#1E293B' }}>{subj.subject}</span>
-                      <span style={{ fontWeight: 700, color: subj.avgPercentage >= 65 ? '#059669' : '#D97706' }}>
-                        {subj.avgPercentage}% ({subj.papersEvaluated} papers)
-                      </span>
+              <div className="analytics-subject-bars">
+                {subjectChartData.map((subject) => (
+                  <div className="analytics-subject-row" key={subject.subject}>
+                    <span className="analytics-subject-name">{subject.subject}</span>
+                    <div className="analytics-bar-track">
+                      <div
+                        className={`analytics-bar-fill analytics-bar-${subject.color}`}
+                        style={{
+                          width: `${Math.max(0, Math.min(100, subject.score))}%`,
+                        }}
+                      />
                     </div>
-                    <div style={{ height: '8px', background: '#E2E8F0', borderRadius: '999px', overflow: 'hidden' }}>
-                      <div style={{ width: `${Math.min(100, subj.avgPercentage)}%`, height: '100%', background: subj.avgPercentage >= 65 ? '#059669' : '#D97706' }} />
-                    </div>
+                    <strong>{subject.score}%</strong>
                   </div>
                 ))}
               </div>
-            )}
-          </div>
-        </div>
 
-        {/* Student-Level Drilldown Directory */}
-        <div className="m-card">
-          <div className="m-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
-            <div>
-              <h3 className="m-card-title">Student Diagnostic Roster</h3>
-              <p style={{ fontSize: '0.8125rem', color: '#64748B', margin: '0.2rem 0 0 0' }}>
-                Drill down into individual student scores, common knowledge gaps, and WhatsApp status
-              </p>
+              <div className="analytics-subject-footer">
+                <BookOpen size={17} />
+                <span>Subject performance</span>
+                <strong>
+                  {Math.round(
+                    subjectChartData.reduce(
+                      (sum, subject) => sum + subject.score,
+                      0,
+                    ) / Math.max(subjectChartData.length, 1),
+                  )}%
+                </strong>
+              </div>
+            </article>
+          </section>
+
+          <section className="analytics-panel analytics-cohort-panel">
+            <div className="analytics-panel-heading">
+              <div>
+                <h2>Cohort Clustering</h2>
+                <p>Student groups based on performance patterns</p>
+              </div>
+              <span className="analytics-sample-badge">Illustrative data</span>
             </div>
 
-            {/* Filter controls */}
-            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-              <div style={{ position: 'relative' }}>
-                <Search className="size-4 text-slate-400" style={{ position: 'absolute', left: '10px', top: '10px' }} />
-                <input
-                  type="text"
-                  placeholder="Search student or roll..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="form-input"
-                  style={{ paddingLeft: '2rem', height: '36px', fontSize: '0.8125rem', width: '220px' }}
-                />
+            <div className="analytics-cohort-grid">
+              {COHORTS.map((cohort) => (
+                <article
+                  className={`analytics-cohort-card analytics-cohort-${cohort.color}`}
+                  key={cohort.title}
+                >
+                  <div className="analytics-cohort-top">
+                    <span className="analytics-cohort-icon">
+                      <GraduationCap size={20} />
+                    </span>
+                    <strong>{cohort.percentage}%</strong>
+                  </div>
+                  <h3>{cohort.title}</h3>
+                  <div className="analytics-cohort-count">
+                    <strong>{cohort.students}</strong>
+                    <span>students</span>
+                  </div>
+                  <p>{cohort.description}</p>
+                  <div className="analytics-cohort-progress">
+                    <span style={{ width: `${cohort.average}%` }} />
+                  </div>
+                  <div className="analytics-cohort-average">
+                    <span>Illustrative average</span>
+                    <strong>{cohort.average}%</strong>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+
+          <section className="analytics-panel analytics-students-panel">
+            <div className="analytics-student-list-header">
+              <div className="analytics-student-list-title">
+                <Users size={24} />
+                <div>
+                  <h2>
+                    Students in{' '}
+                    {selectedClass === 'All Classes' ? 'Class 8' : selectedClass}
+                    {' - '}
+                    {selectedSection === 'All Sections'
+                      ? 'Section A'
+                      : `Section ${selectedSection}`}
+                  </h2>
+                  <p>
+                    List of all students with their performance and latest
+                    assessment status.
+                  </p>
+                </div>
               </div>
 
-              {uniqueClasses.length > 0 && (
-                <select
-                  value={selectedClass}
-                  onChange={(e) => setSelectedClass(e.target.value)}
-                  className="form-input"
-                  style={{ height: '36px', fontSize: '0.8125rem' }}
-                >
-                  <option value="ALL">All Classes</option>
-                  {uniqueClasses.map(c => (
-                    <option key={c} value={c}>{c}</option>
-                  ))}
-                </select>
-              )}
-            </div>
-          </div>
+              <button
+                type="button"
+                className="analytics-view-all"
+                onClick={() => setCurrentView('studentsList')}
+              >
+                View all students <ChevronRight size={15} />
+              </button>
 
-          {isLoading ? (
-            <div style={{ padding: '3rem', textAlign: 'center', color: '#64748B' }}>
-              Loading analytics and student rosters...
+              <label className="analytics-student-list-search">
+                <Search size={15} />
+                <input
+                  type="search"
+                  placeholder="Search by student name, enrollment no. or admission no..."
+                  value={searchTerm}
+                  onChange={(event) => setSearchTerm(event.target.value)}
+                />
+              </label>
             </div>
-          ) : filteredStudents.length === 0 ? (
-            <div style={{ padding: '3rem', textAlign: 'center', color: '#64748B' }}>
-              <Users className="size-10 text-slate-300 mx-auto" style={{ margin: '0 auto 0.75rem auto' }} />
-              <p style={{ fontWeight: 600, color: '#334155' }}>No students match your criteria.</p>
-              <p style={{ fontSize: '0.8125rem', color: '#94A3B8' }}>Enroll students via the Students tab or upload a bulk roster CSV.</p>
-            </div>
-          ) : (
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.875rem' }}>
+
+            <div className="analytics-table-wrap">
+              <table className="analytics-student-table analytics-compact-table">
                 <thead>
-                  <tr style={{ background: '#F8FAFC', borderBottom: '1px solid #E2E8F0', color: '#475569', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                    <th style={{ padding: '0.875rem 1rem' }}>Student Name & Roll</th>
-                    <th style={{ padding: '0.875rem 1rem' }}>Class & Section</th>
-                    <th style={{ padding: '0.875rem 1rem' }}>Tests</th>
-                    <th style={{ padding: '0.875rem 1rem' }}>Average %</th>
-                    <th style={{ padding: '0.875rem 1rem' }}>Performance Status</th>
-                    <th style={{ padding: '0.875rem 1rem' }}>Key Knowledge Gap</th>
-                    <th style={{ padding: '0.875rem 1rem' }}>Parent WhatsApp</th>
-                    <th style={{ padding: '0.875rem 1rem', textAlign: 'right' }}>Actions</th>
+                  <tr>
+                    <th className="analytics-checkbox-cell">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all students on this page"
+                        checked={
+                          paginatedStudents.length > 0 &&
+                          paginatedStudents.every((student) =>
+                            selectedIds.includes(student.id),
+                          )
+                        }
+                        onChange={toggleAllVisible}
+                      />
+                    </th>
+                    <th>#</th>
+                    <th>Student Name</th>
+                    <th>Enrollment No.</th>
+                    <th>Admission No.</th>
+                    <th>Overall Score</th>
+                    <th>Latest Assessment</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
+
                 <tbody>
-                  {filteredStudents.map((st) => (
-                    <tr key={st.id} style={{ borderBottom: '1px solid #F1F5F9', transition: 'background 0.15s ease' }} className="hover:bg-slate-50">
-                      <td style={{ padding: '0.875rem 1rem' }}>
-                        <div style={{ fontWeight: 700, color: '#0F172A' }}>{st.name}</div>
-                        <div style={{ fontSize: '0.75rem', color: '#64748B' }}>Roll: {st.rollNumber} {st.admissionNo !== 'N/A' && `| Adm: ${st.admissionNo}`}</div>
-                      </td>
-                      <td style={{ padding: '0.875rem 1rem' }}>
-                        <span style={{ display: 'inline-block', padding: '0.2rem 0.5rem', background: '#EFF6FF', color: '#1E40AF', borderRadius: '4px', fontSize: '0.75rem', fontWeight: 600 }}>
-                          {st.className} - Sec {st.sectionName}
-                        </span>
-                      </td>
-                      <td style={{ padding: '0.875rem 1rem', fontWeight: 600 }}>{st.testsTaken}</td>
-                      <td style={{ padding: '0.875rem 1rem' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                          <span style={{ fontWeight: 700, color: st.avgPercentage >= 70 ? '#059669' : st.avgPercentage >= 50 ? '#D97706' : '#DC2626' }}>
-                            {st.avgPercentage}%
+                  {paginatedStudents.map((student, index) => {
+                    const latestSubmission = student.recentSubmissions?.[0];
+                    const score = Math.round(student.avgPercentage || 0);
+
+                    return (
+                      <tr key={student.id}>
+                        <td className="analytics-checkbox-cell">
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${student.name}`}
+                            checked={selectedIds.includes(student.id)}
+                            onChange={() => toggleStudent(student.id)}
+                          />
+                        </td>
+
+                        <td>
+                          {(safePage - 1) * pageSize + index + 1}
+                        </td>
+
+                        <td>
+                          <strong
+                            className="analytics-student-name-link"
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => setSelectedStudent(student)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                setSelectedStudent(student);
+                              }
+                            }}
+                          >
+                            {student.name}
+                          </strong>
+                        </td>
+
+                        <td>{student.rollNumber || '—'}</td>
+                        <td>{student.admissionNo || '—'}</td>
+
+                        <td>
+                          <span
+                            className={`analytics-score-pill ${
+                              score >= 75
+                                ? 'high'
+                                : score >= 50
+                                  ? 'medium'
+                                  : 'low'
+                            }`}
+                          >
+                            {score}%
                           </span>
-                        </div>
-                      </td>
-                      <td style={{ padding: '0.875rem 1rem' }}>
-                        {st.status === 'Excelling' && (
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', padding: '0.2rem 0.5rem', background: '#ECFDF5', color: '#065F46', borderRadius: '999px', fontSize: '0.75rem', fontWeight: 600 }}>
-                            <CheckCircle2 className="size-3.5" /> Excelling
-                          </span>
-                        )}
-                        {st.status === 'Average' && (
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', padding: '0.2rem 0.5rem', background: '#EFF6FF', color: '#1E40AF', borderRadius: '999px', fontSize: '0.75rem', fontWeight: 600 }}>
-                            Average
-                          </span>
-                        )}
-                        {st.status === 'Needs Support' && (
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', padding: '0.2rem 0.5rem', background: '#FEF2F2', color: '#991B1B', borderRadius: '999px', fontSize: '0.75rem', fontWeight: 600 }}>
-                            <AlertTriangle className="size-3.5" /> Needs Support
-                          </span>
-                        )}
-                        {st.status === 'No Tests' && (
-                          <span style={{ display: 'inline-flex', alignItems: 'center', padding: '0.2rem 0.5rem', background: '#F1F5F9', color: '#64748B', borderRadius: '999px', fontSize: '0.75rem' }}>
-                            Pending Test
-                          </span>
-                        )}
-                      </td>
-                      <td style={{ padding: '0.875rem 1rem', maxWidth: '240px' }}>
-                        {st.knowledgeGaps.length > 0 ? (
-                          <span style={{ color: '#B91C1C', fontSize: '0.75rem', fontWeight: 500 }}>
-                            {st.knowledgeGaps[0]}
-                          </span>
-                        ) : (
-                          <span style={{ color: '#94A3B8', fontSize: '0.75rem' }}>No critical gaps</span>
-                        )}
-                      </td>
-                      <td style={{ padding: '0.875rem 1rem' }}>
-                        {st.parentPhone && st.parentPhone !== 'N/A' ? (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: '#059669', fontSize: '0.75rem', fontWeight: 600 }}>
-                            <MessageSquare className="size-3.5" />
-                            <span>{st.parentPhone}</span>
-                          </div>
-                        ) : (
-                          <span style={{ color: '#94A3B8', fontSize: '0.75rem' }}>Not linked</span>
-                        )}
-                      </td>
-                      <td style={{ padding: '0.875rem 1rem', textAlign: 'right' }}>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => setSelectedStudent(st)}
-                          style={{ padding: '0.25rem 0.6rem', fontSize: '0.75rem' }}
-                        >
-                          <span>Insights</span>
-                          <ChevronRight className="size-3" />
-                        </button>
+                        </td>
+
+                        <td>
+                          {latestSubmission ? latestSubmission.subject : '—'}
+                        </td>
+
+                        <td>
+                          <button
+                            type="button"
+                            className="analytics-row-action"
+                            onClick={() => setSelectedStudent(student)}
+                            aria-label={`View individual performance for ${student.name}`}
+                          >
+                            View
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                  {paginatedStudents.length === 0 && (
+                    <tr>
+                      <td colSpan={8} className="analytics-empty-row">
+                        No students match the selected filters.
                       </td>
                     </tr>
-                  ))}
+                  )}
                 </tbody>
               </table>
             </div>
-          )}
-        </div>
-      </div>
 
-      {/* Student Diagnostic Detail Modal */}
-      {selectedStudent && (
-        <div style={{
-          position: 'fixed',
-          inset: 0,
-          background: 'rgba(15, 23, 42, 0.65)',
-          backdropFilter: 'blur(4px)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000,
-          padding: '1rem'
-        }}>
-          <div className="m-card" style={{ width: '100%', maxWidth: '600px', maxHeight: '90vh', overflowY: 'auto' }}>
-            <div className="m-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <h3 className="m-card-title">{selectedStudent.name}</h3>
-                <p style={{ fontSize: '0.8125rem', color: '#64748B', margin: '0.1rem 0 0 0' }}>
-                  Roll: {selectedStudent.rollNumber} | {selectedStudent.className} - Section {selectedStudent.sectionName}
-                </p>
-              </div>
-              <button onClick={() => setSelectedStudent(null)} style={{ background: 'transparent', border: 'none', cursor: 'pointer' }}>
-                <X className="size-5 text-slate-500" />
-              </button>
-            </div>
+            <div className="analytics-table-footer">
+              <div className="analytics-pagination">
+                <span>
+                  Showing{' '}
+                  {filteredStudents.length === 0
+                    ? 0
+                    : (safePage - 1) * pageSize + 1}
+                  {' - '}
+                  {Math.min(safePage * pageSize, filteredStudents.length)}{' '}
+                  of {filteredStudents.length} students
+                </span>
 
-            <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              {/* Top highlights */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.75rem' }}>
-                <div style={{ padding: '0.75rem', background: '#F8FAFC', borderRadius: '0.5rem', border: '1px solid #E2E8F0' }}>
-                  <div style={{ fontSize: '0.75rem', color: '#64748B' }}>Cumulative Score</div>
-                  <div style={{ fontSize: '1.25rem', fontWeight: 800, color: '#0F172A' }}>{selectedStudent.avgPercentage}%</div>
-                </div>
-                <div style={{ padding: '0.75rem', background: '#F8FAFC', borderRadius: '0.5rem', border: '1px solid #E2E8F0' }}>
-                  <div style={{ fontSize: '0.75rem', color: '#64748B' }}>Parent Contact (WhatsApp)</div>
-                  <div style={{ fontSize: '0.875rem', fontWeight: 700, color: '#059669', marginTop: '0.2rem' }}>
-                    {selectedStudent.parentPhone || 'Not connected'}
-                  </div>
-                </div>
-              </div>
+                <div className="analytics-pagination-controls">
+                  <button
+                    type="button"
+                    disabled={safePage <= 1}
+                    onClick={() => setCurrentPage(1)}
+                    aria-label="First page"
+                  >
+                    1
+                  </button>
 
-              {/* AI Identified Excelled Areas */}
-              <div>
-                <div style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#065F46', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                  <CheckCircle2 className="size-4" />
-                  <span>Demonstrated Strengths (AI Verified)</span>
-                </div>
-                {selectedStudent.excelledAreas.length > 0 ? (
-                  <ul style={{ paddingLeft: '1.25rem', fontSize: '0.8125rem', color: '#334155' }}>
-                    {selectedStudent.excelledAreas.map((area, i) => (
-                      <li key={i}>{area}</li>
+                  {Array.from({ length: totalPages }, (_, index) => index + 1)
+                    .filter(
+                      (page) =>
+                        page !== 1 &&
+                        (page === safePage ||
+                          page === safePage - 1 ||
+                          page === safePage + 1),
+                    )
+                    .map((page) => (
+                      <button
+                        key={page}
+                        type="button"
+                        className={safePage === page ? 'active' : ''}
+                        onClick={() => setCurrentPage(page)}
+                      >
+                        {page}
+                      </button>
                     ))}
-                  </ul>
-                ) : (
-                  <p style={{ fontSize: '0.8125rem', color: '#94A3B8' }}>No strength tags recorded yet.</p>
-                )}
-              </div>
 
-              {/* AI Identified Knowledge Gaps */}
-              <div>
-                <div style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#991B1B', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                  <AlertTriangle className="size-4" />
-                  <span>Target Revision & Concept Gaps</span>
+                  <button
+                    type="button"
+                    disabled={safePage >= totalPages}
+                    onClick={() =>
+                      setCurrentPage((page) => Math.min(page + 1, totalPages))
+                    }
+                    aria-label="Next page"
+                  >
+                    <ChevronRight size={15} />
+                  </button>
                 </div>
-                {selectedStudent.knowledgeGaps.length > 0 ? (
-                  <ul style={{ paddingLeft: '1.25rem', fontSize: '0.8125rem', color: '#991B1B' }}>
-                    {selectedStudent.knowledgeGaps.map((gap, i) => (
-                      <li key={i}>{gap}</li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p style={{ fontSize: '0.8125rem', color: '#94A3B8' }}>No critical concept gaps detected.</p>
-                )}
-              </div>
-
-              {/* Recent tests */}
-              <div>
-                <div style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#1E293B', marginBottom: '0.4rem' }}>
-                  Recent Evaluated Scripts ({selectedStudent.recentSubmissions.length})
-                </div>
-                {selectedStudent.recentSubmissions.length === 0 ? (
-                  <p style={{ fontSize: '0.8125rem', color: '#94A3B8' }}>No evaluated tests for this student yet.</p>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                    {selectedStudent.recentSubmissions.map(sub => (
-                      <div key={sub.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.5rem 0.75rem', background: '#F8FAFC', borderRadius: '4px', fontSize: '0.8125rem' }}>
-                        <span style={{ fontWeight: 600 }}>{sub.subject || 'Assignment'}</span>
-                        <span style={{ fontWeight: 700, color: '#2563EB' }}>{sub.score}/{sub.maxScore || 40} marks</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
               </div>
             </div>
-          </div>
-        </div>
+          </section>
+        </>
+      ) : (
+        <SubjectAnalytics
+          subject={selectedSubject}
+          students={filteredStudents}
+          onViewLearningGaps={() => setCurrentView('learningGaps')}
+          onSelectStudent={(student) => setSelectedStudent(student)}
+          onViewAllStudents={() => setCurrentView('studentsList')}
+        />
       )}
     </div>
   );
