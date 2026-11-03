@@ -29,6 +29,7 @@ import {
   Sliders
 } from 'lucide-react';
 import { API_BASE_URL } from '../config/api';
+import { useAuth } from '../context/AuthContext';
 import LanguageSelect from '../components/LanguageSelect';
 
 type SubjectOption = { id: string; name: string; grade?: string; board?: string; className?: string };
@@ -63,6 +64,7 @@ export interface LetterheadConfig {
 }
 
 export default function ExamGenerator() {
+  const { currentBranchId, branches } = useAuth();
   const [searchParams] = useSearchParams();
   const queryClassId = searchParams.get('classId');
   const queryClassSubjectId = searchParams.get('classSubjectId');
@@ -206,18 +208,19 @@ export default function ExamGenerator() {
 
   // Fetch subjects on mount
   useEffect(() => {
-    fetch(`${API_BASE_URL}/api/subjects`)
+    const branch = currentBranchId || (branches.length > 0 ? branches[0].id : '');
+    const url = branch ? `${API_BASE_URL}/api/branch/${branch}/subjects` : `${API_BASE_URL}/api/subjects`;
+    fetch(url)
       .then((res) => res.json())
       .then((data) => {
-        if (data.success && Array.isArray(data.subjects)) {
-          setSubjects(data.subjects);
-          if (data.subjects.length > 0) {
-            setSubject(data.subjects[0].name);
-          }
+        const list = Array.isArray(data.data) ? data.data : (Array.isArray(data.subjects) ? data.subjects : (Array.isArray(data) ? data : []));
+        if (list.length > 0) {
+          setSubjects(list);
+          setSubject(list[0].name);
         }
       })
       .catch((err) => console.error('Unable to load subjects:', err));
-  }, []);
+  }, [currentBranchId]);
 
   const activeSubject = subjects.find((item) => item.name === subject);
   const activeClassName = activeSubject?.className || queryClassName || activeSubject?.name || subject;

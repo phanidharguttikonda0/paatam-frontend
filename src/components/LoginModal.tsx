@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ShieldCheck, GraduationCap, Users, X, KeyRound, Building2 } from 'lucide-react';
-import { useAuth, type UserRole, DEMO_PROFILES } from '../context/AuthContext';
+import { useAuth, type UserRole } from '../context/AuthContext';
 
 interface LoginModalProps {
   isOpen: boolean;
@@ -11,7 +11,6 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
   const {
     currentUser,
     switchRole,
-    loginWithProfile,
     branches,
     currentBranchId,
     setCurrentBranchId,
@@ -47,22 +46,10 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
       if (res && res.success) {
         onClose();
       } else {
-        const demo = DEMO_PROFILES[roleTab];
-        if (demo) {
-          loginWithProfile(demo);
-          onClose();
-        } else {
-          setErrorMsg(res?.message || 'Authentication failed.');
-        }
+        setErrorMsg(res?.message || 'Authentication failed. Please verify credentials.');
       }
-    } catch {
-      const demo = DEMO_PROFILES[roleTab];
-      if (demo) {
-        loginWithProfile(demo);
-        onClose();
-      } else {
-        setErrorMsg('Could not connect to authentication service.');
-      }
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Could not connect to authentication service.');
     } finally {
       setIsLoading(false);
     }

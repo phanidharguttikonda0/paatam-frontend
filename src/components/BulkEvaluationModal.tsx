@@ -25,7 +25,7 @@ export default function BulkEvaluationModal({ isOpen, assignmentId = '', onClose
   const [batchJob, setBatchJob] = useState<any>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Poll batch status when jobId exists
+  // Poll batch status: GET /api/submissions/batch/:jobId
   useEffect(() => {
     if (!jobId) return;
 

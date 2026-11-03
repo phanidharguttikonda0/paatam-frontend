@@ -3249,43 +3249,300 @@ p {
 .login-page-wrapper {
   min-height: 100vh;
   width: 100%;
-  background: linear-gradient(135deg, #0B132B 0%, #1C2541 50%, #0F172A 100%);
+  background:
+    radial-gradient(120% 90% at 50% -10%, #1D3A8A 0%, rgba(29, 58, 138, 0) 55%),
+    radial-gradient(120% 110% at 100% 100%, rgba(56, 189, 248, 0.22) 0%, rgba(56, 189, 248, 0) 56%),
+    linear-gradient(160deg, #030712 0%, #0B1224 48%, #0E152D 100%);
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 2rem 1.5rem;
+  gap: 1.25rem;
+  padding: clamp(1.5rem, 3vw, 2.75rem) 1rem;
   position: relative;
   overflow: hidden;
   font-family: var(--font-sans);
 }
 
+/* Subtle High-Tech Matrix Grid Background */
+.login-page-wrapper::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: 
+    radial-gradient(rgba(125, 211, 252, 0.22) 1.1px, transparent 1.1px),
+    linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+  background-size: 34px 34px, 64px 64px, 64px 64px;
+  background-position: 0 0, 0 0, 0 0;
+  pointer-events: none;
+  opacity: 0.58;
+}
+
+.login-page-wrapper::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at center, rgba(2, 6, 23, 0) 30%, rgba(2, 6, 23, 0.66) 100%);
+  pointer-events: none;
+}
+
+/* Glowing accent aurora at top */
+.login-bg-aurora {
+  position: absolute;
+  top: -10%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(1200px, 92vw);
+  height: 480px;
+  background: radial-gradient(ellipse 60% 56% at 50% 0%, rgba(59, 130, 246, 0.35) 0%, rgba(37, 99, 235, 0.18) 46%, rgba(14, 165, 233, 0.09) 62%, transparent 82%);
+  filter: blur(56px);
+  pointer-events: none;
+  opacity: 0.92;
+}
+
 .login-bg-glow-top {
   position: absolute;
-  top: -15%;
-  left: 20%;
-  width: 500px;
-  height: 500px;
+  top: -12%;
+  left: 12%;
+  width: 600px;
+  height: 600px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(99, 102, 241, 0.25) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(56, 189, 248, 0.2) 0%, rgba(37, 99, 235, 0.08) 50%, transparent 70%);
+  filter: blur(60px);
   pointer-events: none;
+  animation: floatOrbTop 15s ease-in-out infinite alternate;
 }
 
 .login-bg-glow-bottom {
   position: absolute;
   bottom: -15%;
-  right: 15%;
-  width: 600px;
-  height: 600px;
+  right: 10%;
+  width: 680px;
+  height: 680px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(147, 51, 234, 0.2) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(14, 165, 233, 0.2) 0%, rgba(56, 189, 248, 0.08) 50%, transparent 70%);
+  filter: blur(70px);
   pointer-events: none;
+  animation: floatOrbBottom 18s ease-in-out infinite alternate;
+}
+
+@keyframes floatOrbTop {
+  0% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(40px, 30px) scale(1.08); }
+  100% { transform: translate(-30px, 50px) scale(0.95); }
+}
+
+@keyframes floatOrbBottom {
+  0% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-50px, -40px) scale(1.1); }
+  100% { transform: translate(30px, -20px) scale(0.92); }
+}
+
+.login-role-tab {
+  background: transparent;
+  color: #64748B;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.login-role-tab:hover {
+  color: #1E293B;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.login-role-tab.active {
+  background: #FFFFFF !important;
+  color: #1D4ED8 !important;
+  box-shadow: 0 8px 16px -12px rgba(30, 64, 175, 0.8), 0 2px 4px -2px rgba(15, 23, 42, 0.25);
 }
 
 .login-container {
   width: 100%;
-  max-width: 980px;
+  max-width: 640px;
   position: relative;
   z-index: 10;
+}
+
+.sso-shell {
+  margin: 0 auto;
+  padding: clamp(1rem, 2vw, 2rem) 0.75rem;
+}
+
+.sso-branding-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  margin-bottom: 1.35rem;
+}
+
+.sso-kicker-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: rgba(148, 163, 184, 0.14);
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  padding: 0.35rem 0.9rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #BAE6FD;
+  backdrop-filter: blur(10px);
+  margin-bottom: 0.95rem;
+  box-shadow: 0 10px 30px rgba(8, 47, 73, 0.28);
+}
+
+.sso-kicker-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #22C55E;
+  display: inline-block;
+  box-shadow: 0 0 14px rgba(34, 197, 94, 0.95);
+}
+
+.sso-brand-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.625rem;
+  margin-bottom: 0.7rem;
+}
+
+.sso-brand-logo {
+  width: 42px;
+  height: 42px;
+  border-radius: 0.625rem;
+  object-fit: cover;
+  box-shadow: 0 8px 24px rgba(37, 99, 235, 0.34);
+}
+
+.sso-brand-name {
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  color: #FFFFFF;
+}
+
+.sso-brand-title {
+  font-size: clamp(1.28rem, 2.2vw, 1.56rem);
+  font-weight: 700;
+  color: #F8FAFC;
+  margin: 0 0 0.3rem 0;
+}
+
+.sso-brand-subtitle {
+  font-size: 0.875rem;
+  color: #C7D2FE;
+  margin: 0;
+}
+
+.sso-login-card {
+  background: rgba(255, 255, 255, 0.97) !important;
+  border-radius: 1.2rem !important;
+  border: 1px solid rgba(148, 163, 184, 0.3) !important;
+  box-shadow:
+    0 36px 70px -28px rgba(2, 6, 23, 0.68),
+    0 18px 40px -22px rgba(30, 64, 175, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92) !important;
+  padding: clamp(1.2rem, 3vw, 2.15rem) !important;
+}
+
+.sso-desk-label {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #64748B;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 0.5rem;
+}
+
+.sso-desk-tabs-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.375rem;
+  background: linear-gradient(180deg, #EEF2FF 0%, #E2E8F0 100%);
+  padding: 0.375rem;
+  border-radius: 0.75rem;
+  border: 1px solid #E2E8F0;
+}
+
+.login-panel .form-input-box input {
+  border-color: #CBD5E1 !important;
+  background: #FFFFFF !important;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.login-panel .form-input-box input:focus {
+  border-color: #2563EB !important;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+
+.login-panel form button[type='submit'] {
+  background: linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%) !important;
+  box-shadow: 0 12px 28px -16px rgba(29, 78, 216, 0.95) !important;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
+}
+
+.login-panel form button[type='submit']:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 30px -14px rgba(29, 78, 216, 0.9) !important;
+  filter: saturate(1.06);
+}
+
+.sso-trust-row {
+  text-align: center;
+  margin-top: 0.25rem;
+  margin-bottom: 0.1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  color: #94A3B8;
+  font-size: 0.75rem;
+  z-index: 10;
+  position: relative;
+  flex-wrap: wrap;
+}
+
+.sso-trust-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.sso-trust-icon-green {
+  color: #22C55E;
+}
+
+.sso-trust-icon-blue {
+  color: #60A5FA;
+}
+
+@media (max-width: 760px) {
+  .sso-desk-tabs-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sso-kicker-badge {
+    max-width: 100%;
+    line-height: 1.25;
+    text-wrap: balance;
+  }
+
+  .sso-trust-row {
+    gap: 0.65rem;
+  }
+}
+
+@media (max-width: 520px) {
+  .sso-brand-name {
+    font-size: 1.25rem;
+  }
+
+  .sso-brand-subtitle {
+    font-size: 0.8rem;
+  }
 }
 
 .login-top-bar {

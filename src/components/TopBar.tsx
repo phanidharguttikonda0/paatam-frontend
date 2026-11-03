@@ -9,6 +9,7 @@ import {
   FileCheck2
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { checkSystemHealth, API_BASE_URL } from '../config/api';
 
 export default function TopBar() {
   const navigate = useNavigate();
@@ -24,7 +25,41 @@ export default function TopBar() {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [hasUnreadNotifications, setHasUnreadNotifications] = useState(true);
+  const [hasUnreadNotifications, setHasUnreadNotifications] = useState(false);
+  const [healthStatus, setHealthStatus] = useState<{ status: string; timestamp?: string } | null>(null);
+  const [notifications, setNotifications] = useState<any[]>([]);
+
+  useEffect(() => {
+    checkSystemHealth().then(setHealthStatus);
+    const interval = setInterval(() => {
+      checkSystemHealth().then(setHealthStatus);
+    }, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Fetch live notifications strictly from backend API (GET /api/notifications or GET /api/student/notifications)
+  useEffect(() => {
+    if (!currentUser) return;
+    const fetchLiveNotifications = async () => {
+      try {
+        const ep = role === 'STUDENT' ? `${API_BASE_URL}/api/student/notifications` : `${API_BASE_URL}/api/notifications`;
+        const res = await fetch(ep);
+        if (res.ok) {
+          const json = await res.json();
+          const list = Array.isArray(json.data) ? json.data : Array.isArray(json.notifications) ? json.notifications : [];
+          setNotifications(list);
+          setHasUnreadNotifications(list.length > 0);
+        } else {
+          setNotifications([]);
+          setHasUnreadNotifications(false);
+        }
+      } catch {
+        setNotifications([]);
+        setHasUnreadNotifications(false);
+      }
+    };
+    fetchLiveNotifications();
+  }, [role, currentUser]);
 
   const profileRef = useRef<HTMLDivElement>(null);
   const notificationsRef = useRef<HTMLDivElement>(null);
@@ -55,6 +90,27 @@ export default function TopBar() {
     e.preventDefault();
     if (!searchQuery.trim()) return;
     const q = searchQuery.toLowerCase().trim();
+
+    if (role === 'STUDENT') {
+      navigate('/student');
+      return;
+    }
+
+    if (role === 'CORPORATE_ADMIN' || role === 'SUPER_ADMIN') {
+      if (q.includes('faculty') || q.includes('teacher') || q.includes('staff')) {
+        navigate('/teachers');
+      } else if (q.includes('class') || q.includes('grade') || q.includes('section')) {
+        navigate('/classes');
+      } else if (q.includes('submi') || q.includes('grade') || q.includes('review')) {
+        navigate('/submissions');
+      } else if (q.includes('analytic') || q.includes('report')) {
+        navigate('/analytics');
+      } else {
+        navigate(`/campuses?search=${encodeURIComponent(searchQuery)}`);
+      }
+      return;
+    }
+
     if (q.includes('student') || q.includes('roster')) {
       navigate('/students');
     } else if (q.includes('paper') || q.includes('exam')) {
@@ -68,31 +124,31 @@ export default function TopBar() {
     }
   };
 
-  const roleLabel = role === 'ADMIN' ? 'Dean & Principal' : role === 'TEACHER' ? 'Teacher' : 'Student';
-
-  const mockNotifications = [
-    {
-      id: 'n1',
-      title: 'Answer Sheet Ready for Review',
-      desc: 'Student 42 (Mid Term Exam - Paper 2 Reading) waiting for teacher sign-off.',
-      time: '5m ago',
-      path: '/submissions'
-    },
-    {
-      id: 'n2',
-      title: 'AI Evaluation Completed',
-      desc: 'Psychology Unit 3 auto-graded with 98% OCR confidence.',
-      time: '18m ago',
-      path: '/analytics'
-    },
-    {
-      id: 'n3',
-      title: 'Parent WhatsApp Alerts Sent',
-      desc: '34 homework digest messages delivered via WhatsApp API.',
-      time: '1h ago',
-      path: '/parent'
+  const getRoleLabel = (r?: string) => {
+    switch (r?.toUpperCase()) {
+      case 'CORPORATE_ADMIN':
+      case 'SUPER_ADMIN':
+        return 'Corporate Admin';
+      case 'BRANCH_ADMIN':
+      case 'DEAN':
+      case 'PRINCIPAL':
+      case 'VICE_PRINCIPAL':
+      case 'ADMIN':
+        return 'Dean & Principal';
+      case 'TEACHER':
+        return 'Faculty Teacher';
+      case 'PARENT':
+        return 'Parent';
+      case 'STUDENT':
+        return 'Student';
+      default:
+        return r || 'Dean & Principal';
     }
-  ];
+  };
+
+  const roleLabel = getRoleLabel(role);
+
+  // Zero mock notifications - mapped directly from backend GET /api/notifications
 
   if (!currentUser) return null;
 
@@ -105,7 +161,13 @@ export default function TopBar() {
           <input
             type="text"
             className="topbar-search-input"
-            placeholder="Search students, papers, or classes..."
+            placeholder={
+              role === 'CORPORATE_ADMIN' || role === 'SUPER_ADMIN'
+                ? 'Search campuses, faculty, or classes...'
+                : role === 'STUDENT'
+                ? 'Search my test papers...'
+                : 'Search students, papers, or classes...'
+            }
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
@@ -114,6 +176,37 @@ export default function TopBar() {
 
       {/* Right: Notification Bell & User Profile */}
       <div className="topbar-right-group">
+        {/* System Health Status Indicator (GET /api/health) */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: '3px 9px',
+            borderRadius: '9999px',
+            fontSize: '11px',
+            fontWeight: 600,
+            background: healthStatus?.status === 'offline' ? '#FEF2F2' : '#ECFDF5',
+            color: healthStatus?.status === 'offline' ? '#991B1B' : '#065F46',
+            border: `1px solid ${healthStatus?.status === 'offline' ? '#FECACA' : '#A7F3D0'}`,
+            cursor: 'default'
+          }}
+          title={healthStatus?.timestamp ? `Paatam API Live (${healthStatus.timestamp})` : 'Paatam Cloud Connection'}
+        >
+          <span
+            style={{
+              width: '6px',
+              height: '6px',
+              borderRadius: '50%',
+              background: healthStatus?.status === 'offline' ? '#EF4444' : '#10B981',
+              display: 'inline-block'
+            }}
+          />
+          <span style={{ textTransform: 'capitalize' }}>
+            {healthStatus?.status === 'ok' ? 'Cloud Online' : healthStatus?.status || 'Online'}
+          </span>
+        </div>
+
         {/* Notification Bell */}
         <div className="topbar-relative-container" ref={notificationsRef}>
           <button
@@ -139,31 +232,37 @@ export default function TopBar() {
                     Notifications
                   </h4>
                   <span style={{ fontSize: '0.6875rem', color: '#2563EB', fontWeight: 600 }}>
-                    3 New Alerts
+                    {notifications.length} Alert(s)
                   </span>
                 </div>
               </div>
 
               <div className="notifications-list">
-                {mockNotifications.map((notif) => (
-                  <div
-                    key={notif.id}
-                    className="notification-item"
-                    onClick={() => {
-                      setIsNotificationsOpen(false);
-                      navigate(notif.path);
-                    }}
-                  >
-                    <div className="notification-item-icon">
-                      <FileCheck2 size={15} />
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <div className="notification-item-title">{notif.title}</div>
-                      <div className="notification-item-desc">{notif.desc}</div>
-                      <div className="notification-item-time">{notif.time}</div>
-                    </div>
+                {notifications.length === 0 ? (
+                  <div style={{ padding: '1.5rem', textAlign: 'center', color: '#64748B', fontSize: '0.8125rem' }}>
+                    No unread notifications from server
                   </div>
-                ))}
+                ) : (
+                  notifications.map((notif: any) => (
+                    <div
+                      key={notif.id || notif._id}
+                      className="notification-item"
+                      onClick={() => {
+                        setIsNotificationsOpen(false);
+                        if (notif.path) navigate(notif.path);
+                      }}
+                    >
+                      <div className="notification-item-icon">
+                        <FileCheck2 size={15} />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div className="notification-item-title">{notif.title || notif.type || 'Notification'}</div>
+                        <div className="notification-item-desc">{notif.desc || notif.message || notif.recipient || 'Delivery update'}</div>
+                        <div className="notification-item-time">{notif.time || notif.created_at || notif.status || ''}</div>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           )}
@@ -213,7 +312,7 @@ export default function TopBar() {
                     {roleLabel}
                   </span>
                   <span className="branch-tag">
-                    {branches.find(b => b.id === currentBranchId)?.name || 'Central Campus'}
+                    {branches.find(b => b.id === currentBranchId)?.name || (['CORPORATE_ADMIN', 'SUPER_ADMIN'].includes(role) ? 'Institutional Network' : 'Assigned Campus')}
                   </span>
                 </div>
               </div>

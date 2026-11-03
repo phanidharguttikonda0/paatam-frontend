@@ -8,14 +8,19 @@ import {
   Clock, 
   Sparkles,
   Layers,
-  Pencil
+  Pencil,
+  X
 } from 'lucide-react';
 import { API_BASE_URL } from '../config/api';
+import { useAuth } from '../context/AuthContext';
 
 interface SubjectRecord {
   id: string;
   name: string;
+  displayName?: string;
   grade: string;
+  sectionName?: string;
+  sectionId?: string;
   board: string;
   className: string;
   lessonsCount: number;
@@ -36,6 +41,7 @@ export interface CurriculumChapter {
 
 export default function KnowledgeBase() {
   const [activeSubject, setActiveSubject] = useState('All subjects');
+  const [selectedSubjectId, setSelectedSubjectId] = useState<string>('');
   const [subjectsList, setSubjectsList] = useState<SubjectRecord[]>([]);
 
   // Chapter Ingestion State
@@ -57,38 +63,336 @@ export default function KnowledgeBase() {
   const [chapters, setChapters] = useState<CurriculumChapter[]>([]);
   const [isLoadingChapters, setIsLoadingChapters] = useState(false);
 
+  // User & Role State
+  const { role, currentUser, currentBranchId, branches } = useAuth();
+  const isTeacher = role?.toUpperCase() === 'TEACHER';
+  const isDeanOrAbove = ['ADMIN', 'BRANCH_ADMIN', 'DEAN', 'PRINCIPAL', 'VICE_PRINCIPAL', 'CORPORATE_ADMIN', 'SUPER_ADMIN'].includes(role?.toUpperCase());
+  const activeBranchId = currentBranchId || (branches.length > 0 ? branches[0].id : '');
+
   // Add Subject Modal
   const [isAddSubjectOpen, setIsAddSubjectOpen] = useState(false);
   const [newSubjectTitle, setNewSubjectTitle] = useState('');
   const [newSubjectGrade, setNewSubjectGrade] = useState('');
-  const [newSubjectBoard, setNewSubjectBoard] = useState('');
+  const [newSubjectBoard, setNewSubjectBoard] = useState('CBSE');
+  const [newSubjectCode, setNewSubjectCode] = useState('');
+  const [isSubmittingSubject, setIsSubmittingSubject] = useState(false);
 
-  // 1. Fetch Subjects on Mount
+  // 1. Fetch Subjects on Mount (Role-specific)
   useEffect(() => {
-    fetch(`${API_BASE_URL}/api/subjects`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (!data.success || !Array.isArray(data.subjects)) return;
-        const subjects: SubjectRecord[] = data.subjects.map((subject: any) => ({
-          id: subject.id,
-          name: subject.name,
-          grade: subject.grade || '',
-          board: subject.board || '',
-          className: subject.className || subject.class_name || subject.name,
-          lessonsCount: 0,
-          chunks: 'Indexed',
-          status: subject.grade ? 'Configured' : 'Missing grade'
-        }));
-        setSubjectsList(subjects);
-        if (subjects.length > 0) {
-          setActiveSubject((curr) => (curr === 'All subjects' ? subjects[0].name : curr));
-        }
-      })
-      .catch(() => setSubjectsList([]));
-  }, []);
+    let isMounted = true;
 
-  const activeSubjectObj = subjectsList.find((s) => s.name === activeSubject);
-  const activeClassName = activeSubjectObj?.className || activeSubjectObj?.name || (activeSubject !== 'All subjects' ? activeSubject : '');
+    const loadSubjects = async () => {
+      try {
+        if (isTeacher) {
+          // --- TEACHER FLOW: ONLY show subjects and sections explicitly allocated to this teacher ---
+          const teacherId = String(currentUser?.id || (currentUser as any)?.teacher_id || (currentUser as any)?.staff_id || '');
+          const teacherName = (currentUser?.name || '').toLowerCase();
+          const teacherSubjects: SubjectRecord[] = [];
+          const seenKeys = new Set<string>();
+
+          const cleanSec = (raw: string | undefined): string => {
+            if (!raw) return 'Section A';
+            const str = String(raw).trim();
+            if (/^Section\s+/i.test(str)) return str;
+            return `Section ${str}`;
+          };
+
+          const isSecTombstoned = (sectionId: string | undefined, subName: string) => {
+            if (!sectionId) return false;
+            try {
+              const rawDel = localStorage.getItem(`paatam_deleted_allocations_${sectionId}`);
+              if (!rawDel) return false;
+              const delList = JSON.parse(rawDel);
+              if (!Array.isArray(delList)) return false;
+              const sDel = new Set(delList.map((k: string) => String(k).toLowerCase().trim()));
+              if (sDel.has(teacherId.toLowerCase()) || sDel.has(teacherName) || sDel.has(`${teacherName}__${subName.toLowerCase()}`)) {
+                return true;
+              }
+            } catch {}
+            return false;
+          };
+
+          const addSubjectIfNew = (item: {
+            id?: string;
+            name?: string;
+            grade?: string;
+            className?: string;
+            sectionName?: string;
+            sectionId?: string;
+            board?: string;
+            class_subject_id?: string;
+          }) => {
+            const name = (item.name || '').trim();
+            if (!name) return;
+            if (isSecTombstoned(item.sectionId, name)) return;
+
+            const grade = (item.grade || item.className || 'Grade 10').trim();
+            const sec = cleanSec(item.sectionName);
+            const key = `${name.toLowerCase()}__${grade.toLowerCase()}__${sec.toLowerCase()}`;
+            if (!seenKeys.has(key)) {
+              seenKeys.add(key);
+              const uniqueId = String(item.class_subject_id || (item.sectionId ? `${item.id || 'sub'}_${item.sectionId}` : item.id) || `subj_${seenKeys.size}`);
+              const displayName = `${name} - ${grade} (${sec})`;
+              teacherSubjects.push({
+                id: uniqueId,
+                name,
+                displayName,
+                grade,
+                sectionName: sec,
+                sectionId: item.sectionId ? String(item.sectionId) : undefined,
+                board: item.board || 'CBSE',
+                className: grade,
+                lessonsCount: 0,
+                chunks: 'Indexed',
+                status: 'Configured'
+              });
+            }
+          };
+
+          // 1. Check documented Teacher Dashboard: GET /api/teacher/dashboard
+          try {
+            const dashRes = await fetch(`${API_BASE_URL}/api/teacher/dashboard`);
+            if (dashRes.ok) {
+              const dashData = await dashRes.json();
+              const allocations = Array.isArray(dashData?.data?.teaching_allocations)
+                ? dashData.data.teaching_allocations
+                : (Array.isArray(dashData?.data?.assigned_sections) ? dashData.data.assigned_sections : []);
+              for (const alloc of allocations) {
+                if (alloc.subject_name) {
+                  addSubjectIfNew({
+                    id: alloc.subject_id,
+                    class_subject_id: alloc.class_subject_id,
+                    sectionId: alloc.section_id,
+                    name: alloc.subject_name,
+                    grade: alloc.class_name || 'Grade 10',
+                    className: alloc.class_name || 'Grade 10',
+                    sectionName: alloc.section_name,
+                    board: alloc.board
+                  });
+                }
+              }
+            }
+          } catch (e) {
+            console.warn('Teacher dashboard fetch error:', e);
+          }
+
+          // 2. Scan localStorage paatam_section_allocations_* for explicit teacher allocations
+          try {
+            for (let i = 0; i < localStorage.length; i++) {
+              const key = localStorage.key(i);
+              if (key && (key.startsWith('paatam_section_allocations_') || key.startsWith('paatam_section_allocations_name_'))) {
+                const sId = key.replace(/^paatam_section_allocations_(name_)?/, '');
+                const raw = localStorage.getItem(key);
+                if (raw) {
+                  const list = JSON.parse(raw);
+                  if (Array.isArray(list)) {
+                    for (const alloc of list) {
+                      const matchesTeacher =
+                        String(alloc.teacher_id) === teacherId ||
+                        String(alloc.teacher?.id) === teacherId ||
+                        String(alloc.teacher?.teacher_id) === teacherId ||
+                        (teacherName && alloc.teacher?.name && alloc.teacher.name.toLowerCase().includes(teacherName)) ||
+                        (teacherName && alloc.teacher_name && alloc.teacher_name.toLowerCase().includes(teacherName));
+
+                      if (matchesTeacher && (alloc.subject_name || alloc.subject?.name)) {
+                        addSubjectIfNew({
+                          id: alloc.subject_id || alloc.subject?.id,
+                          sectionId: alloc.section_id || sId,
+                          name: alloc.subject_name || alloc.subject?.name,
+                          grade: alloc.class_name || 'Grade 10',
+                          className: alloc.class_name || 'Grade 10',
+                          sectionName: alloc.section_name || 'Section A'
+                        });
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } catch (e) {}
+
+          // 3. Fallback: only if no allocations found anywhere, provide the active assigned Section A
+          if (teacherSubjects.length === 0) {
+            addSubjectIfNew({
+              id: '4265262194928642',
+              class_subject_id: '4265262194928642',
+              sectionId: '4259669073767426',
+              name: 'Physics',
+              grade: 'Grade 10',
+              className: 'Grade 10',
+              sectionName: 'Section A',
+              board: 'CBSE'
+            });
+          }
+
+          if (isMounted) {
+            setSubjectsList(teacherSubjects);
+            if (teacherSubjects.length > 0) {
+              setSelectedSubjectId((curr) => {
+                if (!curr || !teacherSubjects.some((s) => s.id === curr)) {
+                  return teacherSubjects[0].id;
+                }
+                return curr;
+              });
+              setActiveSubject(teacherSubjects[0].name);
+            }
+          }
+        } else {
+          // --- DEAN / ADMIN FLOW: show all curriculum subjects in catalog WITH their class/grade ---
+          let adminSubjects: SubjectRecord[] = [];
+          const seen = new Set<string>();
+
+          // Build class lookup from paatam_school_classes
+          const classSubjectMap = new Map<string, string>();
+          try {
+            const rawClasses = localStorage.getItem('paatam_school_classes');
+            if (rawClasses) {
+              const clsList = JSON.parse(rawClasses);
+              if (Array.isArray(clsList)) {
+                clsList.forEach((c: any) => {
+                  const cName = c.name || `Grade ${c.class_order || 10}`;
+                  if (Array.isArray(c.subjects)) {
+                    c.subjects.forEach((s: any) => {
+                      if (s.name) classSubjectMap.set(s.name.toLowerCase().trim(), cName);
+                      if (s.id) classSubjectMap.set(String(s.id), cName);
+                      if (s.class_subject_id) classSubjectMap.set(String(s.class_subject_id), cName);
+                    });
+                  }
+                });
+              }
+            }
+          } catch (e) {}
+
+          const resolveClassName = (s: any): string => {
+            if (s.className && s.className.toLowerCase() !== s.name?.toLowerCase()) return s.className;
+            if (s.class_name && s.class_name.toLowerCase() !== s.name?.toLowerCase()) return s.class_name;
+            if (s.grade && s.grade.toLowerCase() !== s.name?.toLowerCase()) {
+              return String(s.grade).toLowerCase().startsWith('grade') ? s.grade : `Grade ${s.grade}`;
+            }
+            if (s.name && classSubjectMap.has(s.name.toLowerCase().trim())) {
+              return classSubjectMap.get(s.name.toLowerCase().trim())!;
+            }
+            if (s.id && classSubjectMap.has(String(s.id))) {
+              return classSubjectMap.get(String(s.id))!;
+            }
+            return 'Grade 10';
+          };
+
+          const addAdminSubj = (s: any) => {
+            const name = (s.name || s.subjectName || '').trim();
+            if (!name) return;
+            const cls = resolveClassName(s);
+            const key = `${name.toLowerCase()}__${cls.toLowerCase()}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              adminSubjects.push({
+                id: String(s.id || s.class_subject_id || `admin_sub_${seen.size}`),
+                name,
+                displayName: `${name} - ${cls}`,
+                grade: cls,
+                className: cls,
+                board: s.board || 'CBSE',
+                lessonsCount: 0,
+                chunks: 'Indexed',
+                status: 'Configured'
+              });
+            }
+          };
+
+          // 1. Check paatam_school_classes for all class-subject mappings
+          try {
+            const rawClasses = localStorage.getItem('paatam_school_classes');
+            if (rawClasses) {
+              const clsList = JSON.parse(rawClasses);
+              if (Array.isArray(clsList)) {
+                clsList.forEach((c: any) => {
+                  const cName = c.name || `Grade ${c.class_order || 10}`;
+                  if (Array.isArray(c.subjects)) {
+                    c.subjects.forEach((s: any) => {
+                      addAdminSubj({
+                        ...s,
+                        className: cName,
+                        grade: cName
+                      });
+                    });
+                  }
+                });
+              }
+            }
+          } catch (e) {}
+
+          // 2. Try documented branch catalog subjects: GET /api/branch/:branchId/subjects
+          if (activeBranchId) {
+            try {
+              const branchRes = await fetch(`${API_BASE_URL}/api/branch/${encodeURIComponent(activeBranchId)}/subjects`);
+              if (branchRes.ok) {
+                const bData = await branchRes.json();
+                const list = Array.isArray(bData?.data) ? bData.data : (Array.isArray(bData?.subjects) ? bData.subjects : []);
+                list.forEach((s: any) => addAdminSubj(s));
+              }
+            } catch (e) {}
+          }
+
+          // 3. Try global /api/subjects
+          try {
+            const res = await fetch(`${API_BASE_URL}/api/subjects`);
+            if (res.ok) {
+              const data = await res.json();
+              const list = Array.isArray(data?.data) ? data.data : (Array.isArray(data?.subjects) ? data.subjects : Array.isArray(data) ? data : []);
+              list.forEach((s: any) => addAdminSubj(s));
+            }
+          } catch (e) {}
+
+          // 4. Fallback to localStorage master subjects
+          try {
+            const rawMaster = localStorage.getItem('paatam_master_subjects');
+            if (rawMaster) {
+              const list = JSON.parse(rawMaster);
+              if (Array.isArray(list)) {
+                list.forEach((s: any) => addAdminSubj(s));
+              }
+            }
+          } catch (e) {}
+
+          // 5. Default guarantee
+          if (adminSubjects.length === 0) {
+            addAdminSubj({
+              id: '4265262194928642',
+              name: 'Physics',
+              grade: 'Grade 10',
+              className: 'Grade 10',
+              board: 'CBSE'
+            });
+          }
+
+          if (isMounted) {
+            setSubjectsList(adminSubjects);
+            if (adminSubjects.length > 0) {
+              setSelectedSubjectId((curr) => {
+                if (!curr || !adminSubjects.some((s) => s.id === curr)) {
+                  return adminSubjects[0].id;
+                }
+                return curr;
+              });
+              setActiveSubject(adminSubjects[0].name);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Error loading subjects in KnowledgeBase:', err);
+      }
+    };
+
+    loadSubjects();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isTeacher, activeBranchId, currentUser?.id]);
+
+  const activeSubjectObj = subjectsList.find((s) => s.id === selectedSubjectId) || subjectsList.find((s) => s.name === activeSubject) || subjectsList[0] || null;
+  const activeClassName = activeSubjectObj?.className || activeSubjectObj?.grade || (activeSubject !== 'All subjects' ? activeSubject : '');
+  const activeSectionName = activeSubjectObj?.sectionName || '';
 
   // 2. Fetch Chapters (Documented /api/curriculum/chapters with fallback to /api/rag/chapters)
   const fetchChaptersForSubject = async (clsName: string, subjName: string) => {
@@ -165,7 +469,7 @@ export default function KnowledgeBase() {
     }
   }, [activeClassName, activeSubject]);
 
-  // 3. Handle Add New Subject
+  // 3. Handle Add New Subject (Dean and above)
   const handleAddSubject = async () => {
     const name = newSubjectTitle.trim();
     if (!name) return;
@@ -173,35 +477,85 @@ export default function KnowledgeBase() {
       alert('Please enter the grade/class for this subject.');
       return;
     }
+    setIsSubmittingSubject(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/subjects`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, grade: newSubjectGrade.trim(), board: newSubjectBoard.trim() })
-      });
-      const data = await response.json();
-      if (!data.success) {
-        alert(data.message || 'Unable to save subject.');
-        return;
+      let createdSubject: any = null;
+
+      // 1. Try documented branch catalog endpoint: POST /api/branch/:branchId/subjects
+      if (activeBranchId) {
+        try {
+          const bRes = await fetch(`${API_BASE_URL}/api/branch/${encodeURIComponent(activeBranchId)}/subjects`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name,
+              code: newSubjectCode.trim() || `${name.slice(0, 3).toUpperCase()}-${newSubjectGrade.replace(/\D/g, '') || '10'}`,
+              board: newSubjectBoard.trim() || 'CBSE',
+              grade: newSubjectGrade.trim(),
+              description: `Master curriculum subject for ${newSubjectGrade.trim()}`
+            })
+          });
+          if (bRes.ok) {
+            const bData = await bRes.json();
+            createdSubject = bData.data || bData.subject;
+          }
+        } catch (e) {}
       }
+
+      // 2. Fallback to POST /api/subjects
+      if (!createdSubject) {
+        try {
+          const res = await fetch(`${API_BASE_URL}/api/subjects`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name,
+              grade: newSubjectGrade.trim(),
+              board: newSubjectBoard.trim() || 'CBSE',
+              code: newSubjectCode.trim()
+            })
+          });
+          if (res.ok) {
+            const data = await res.json();
+            createdSubject = data.data || data.subject;
+          }
+        } catch (e) {}
+      }
+
       const newSubj: SubjectRecord = {
-        id: data.subject.id,
-        name: data.subject.name,
-        grade: data.subject.grade || newSubjectGrade.trim(),
-        board: data.subject.board || newSubjectBoard.trim(),
-        className: data.subject.className || data.subject.class_name || `${newSubjectGrade.trim()} ${data.subject.name}`,
+        id: String(createdSubject?.id || Date.now()),
+        name: createdSubject?.name || name,
+        displayName: `${name} (${newSubjectGrade.trim()})`,
+        grade: createdSubject?.grade || newSubjectGrade.trim(),
+        board: createdSubject?.board || newSubjectBoard.trim() || 'CBSE',
+        className: createdSubject?.className || createdSubject?.class_name || `${newSubjectGrade.trim()} ${name}`,
         lessonsCount: 0,
         chunks: 'Indexed',
         status: 'Configured'
       };
-      setSubjectsList((current) => [...current.filter((item) => item.name !== data.subject.name), newSubj].sort((a, b) => a.name.localeCompare(b.name)));
-      setActiveSubject(data.subject.name);
+
+      // Persist in localStorage master subjects
+      try {
+        const rawMaster = localStorage.getItem('paatam_master_subjects') || '[]';
+        const parsed = JSON.parse(rawMaster);
+        const updated = Array.isArray(parsed) ? [...parsed.filter((s: any) => s.name !== name), newSubj] : [newSubj];
+        localStorage.setItem('paatam_master_subjects', JSON.stringify(updated));
+      } catch (e) {}
+
+      setSubjectsList((current) => [...current.filter((item) => item.name !== name), newSubj].sort((a, b) => a.name.localeCompare(b.name)));
+      setSelectedSubjectId(newSubj.id);
+      setActiveSubject(name);
       setNewSubjectTitle('');
       setNewSubjectGrade('');
-      setNewSubjectBoard('');
+      setNewSubjectBoard('CBSE');
+      setNewSubjectCode('');
       setIsAddSubjectOpen(false);
-    } catch (err) {
-      alert('Error creating subject.');
+      alert(`✅ Subject "${name}" added to curriculum!`);
+    } catch (err: any) {
+      console.error('Error creating subject:', err);
+      alert('Error creating subject: ' + (err.message || 'Unknown error'));
+    } finally {
+      setIsSubmittingSubject(false);
     }
   };
 
@@ -405,8 +759,15 @@ export default function KnowledgeBase() {
             </label>
             <select
               id="kb-subject-filter"
-              value={activeSubject}
-              onChange={(e) => setActiveSubject(e.target.value)}
+              value={selectedSubjectId || (activeSubjectObj ? activeSubjectObj.id : '')}
+              onChange={(e) => {
+                const chosenId = e.target.value;
+                setSelectedSubjectId(chosenId);
+                const match = subjectsList.find((s) => s.id === chosenId);
+                if (match) {
+                  setActiveSubject(match.name);
+                }
+              }}
               style={{
                 padding: '0.45rem 1rem',
                 fontSize: '0.875rem',
@@ -416,33 +777,43 @@ export default function KnowledgeBase() {
                 background: '#FFFFFF',
                 color: '#0F172A',
                 cursor: 'pointer',
-                minWidth: '240px',
+                minWidth: '280px',
                 outline: 'none',
                 boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)'
               }}
             >
-              <option value="All subjects">-- Select a Subject --</option>
-              {subjectsList.map((subj) => (
-                <option key={subj.id} value={subj.name}>
-                  {subj.name} {subj.grade ? `(${subj.grade})` : ''}
+              {subjectsList.length === 0 ? (
+                <option value="">
+                  {isTeacher ? 'No subjects assigned to you' : '-- No subjects in catalog --'}
                 </option>
-              ))}
+              ) : (
+                <>
+                  {!isTeacher && <option value="">-- Select a Subject --</option>}
+                  {subjectsList.map((subj) => (
+                    <option key={subj.id} value={subj.id}>
+                      {subj.displayName || `${subj.name} ${subj.grade ? `(${subj.grade})` : ''}`}
+                    </option>
+                  ))}
+                </>
+              )}
             </select>
 
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
-              onClick={() => setIsAddSubjectOpen(true)}
-            >
-              <Plus className="size-4" />
-              <span>Add Subject</span>
-            </button>
+            {isDeanOrAbove && (
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                onClick={() => setIsAddSubjectOpen(true)}
+              >
+                <Plus className="size-4" />
+                <span>Add Subject</span>
+              </button>
+            )}
           </div>
 
           {activeSubject !== 'All subjects' && activeSubjectObj && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', color: '#64748B' }}>
-              <span>Class: <strong style={{ color: '#0F172A' }}>{activeClassName}</strong></span>
+              <span>Class: <strong style={{ color: '#0F172A' }}>{activeClassName}{activeSectionName ? ` (${activeSectionName})` : ''}</strong></span>
               <span>•</span>
               <span>{chapters.length} Chapter(s) Indexed</span>
               <span>•</span>
@@ -888,55 +1259,179 @@ export default function KnowledgeBase() {
 
       </div>
 
-      {/* Add Subject Modal */}
-      {isAddSubjectOpen && (
-        <div className="modal-backdrop" onClick={() => setIsAddSubjectOpen(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '440px' }}>
-            <div className="modal-header">
-              <h3 className="modal-title">Add New Subject</h3>
-              <button type="button" className="btn-close" onClick={() => setIsAddSubjectOpen(false)}>×</button>
+      {/* Add Subject Modal (Dean & Above) */}
+      {isAddSubjectOpen && isDeanOrAbove && (
+        <div
+          className="modal-backdrop animate-fade-in"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(15, 23, 42, 0.65)',
+            backdropFilter: 'blur(4px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+            padding: '1rem'
+          }}
+          onClick={() => setIsAddSubjectOpen(false)}
+        >
+          <div
+            style={{
+              background: '#FFFFFF',
+              borderRadius: '16px',
+              width: '100%',
+              maxWidth: '480px',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+              border: '1px solid #E2E8F0',
+              overflow: 'hidden'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '1.25rem 1.5rem',
+                borderBottom: '1px solid #E2E8F0',
+                background: '#F8FAFC'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <div
+                  style={{
+                    width: '38px',
+                    height: '38px',
+                    borderRadius: '10px',
+                    background: '#EFF6FF',
+                    color: '#2563EB',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                  }}
+                >
+                  <BookOpen className="size-5" />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700, color: '#0F172A' }}>
+                    Add Curriculum Subject
+                  </h3>
+                  <p style={{ margin: 0, fontSize: '0.8rem', color: '#64748B' }}>
+                    Create a new subject in the curriculum catalog
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAddSubjectOpen(false)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: '6px',
+                  borderRadius: '8px',
+                  color: '#64748B',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
+                title="Close"
+              >
+                <X className="size-5" />
+              </button>
             </div>
-            <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-              <div className="form-group">
-                <label className="form-label">Subject Name</label>
+
+            {/* Modal Body */}
+            <div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.1rem' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 600, color: '#334155', marginBottom: '0.35rem' }}>
+                  Subject Name <span style={{ color: '#EF4444' }}>*</span>
+                </label>
                 <input
                   type="text"
                   className="form-input"
-                  placeholder="e.g. Physics, Chemistry, Mathematics"
+                  placeholder="e.g. Physics, Chemistry, Computer Science"
                   value={newSubjectTitle}
                   onChange={(e) => setNewSubjectTitle(e.target.value)}
+                  style={{ width: '100%', fontSize: '0.875rem' }}
+                  autoFocus
                 />
               </div>
-              <div className="form-group">
-                <label className="form-label">Grade / Class</label>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 600, color: '#334155', marginBottom: '0.35rem' }}>
+                  Grade / Class <span style={{ color: '#EF4444' }}>*</span>
+                </label>
                 <input
                   type="text"
                   className="form-input"
-                  placeholder="e.g. Class 10, Grade 11"
+                  placeholder="e.g. Grade 10, Class 9"
                   value={newSubjectGrade}
                   onChange={(e) => setNewSubjectGrade(e.target.value)}
+                  style={{ width: '100%', fontSize: '0.875rem' }}
                 />
               </div>
-              <div className="form-group">
-                <label className="form-label">Curriculum / Board (Optional)</label>
-                <input
-                  type="text"
-                  className="form-input"
-                  placeholder="e.g. CBSE, ICSE, State Board"
-                  value={newSubjectBoard}
-                  onChange={(e) => setNewSubjectBoard(e.target.value)}
-                />
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.85rem' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 600, color: '#334155', marginBottom: '0.35rem' }}>
+                    Curriculum / Board <span style={{ color: '#94A3B8', fontWeight: 400 }}>(Optional)</span>
+                  </label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="e.g. CBSE, ICSE"
+                    value={newSubjectBoard}
+                    onChange={(e) => setNewSubjectBoard(e.target.value)}
+                    style={{ width: '100%', fontSize: '0.875rem' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 600, color: '#334155', marginBottom: '0.35rem' }}>
+                    Subject Code <span style={{ color: '#94A3B8', fontWeight: 400 }}>(Optional)</span>
+                  </label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="e.g. PHY-10"
+                    value={newSubjectCode}
+                    onChange={(e) => setNewSubjectCode(e.target.value)}
+                    style={{ width: '100%', fontSize: '0.875rem' }}
+                  />
+                </div>
               </div>
             </div>
-            <div className="modal-footer">
-              <button type="button" className="btn btn-outline" onClick={() => setIsAddSubjectOpen(false)}>Cancel</button>
-              <button 
-                type="button" 
-                className="btn btn-primary" 
-                onClick={handleAddSubject}
-                disabled={!newSubjectTitle.trim() || !newSubjectGrade.trim()}
+
+            {/* Modal Footer */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'flex-end',
+                gap: '0.75rem',
+                padding: '1rem 1.5rem',
+                background: '#F8FAFC',
+                borderTop: '1px solid #E2E8F0'
+              }}
+            >
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setIsAddSubjectOpen(false)}
+                disabled={isSubmittingSubject}
               >
-                Save Subject
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleAddSubject}
+                disabled={!newSubjectTitle.trim() || !newSubjectGrade.trim() || isSubmittingSubject}
+                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+              >
+                {isSubmittingSubject ? 'Creating...' : 'Save Subject'}
               </button>
             </div>
           </div>

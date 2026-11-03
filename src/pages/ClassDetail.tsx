@@ -12,13 +12,16 @@ import {
   GraduationCap,
   X,
   ExternalLink,
-  ShieldCheck
+  ShieldCheck,
+  FileText
 } from 'lucide-react';
 import { API_BASE_URL } from '../config/api';
 import { useAuth } from '../context/AuthContext';
 
 type ClassSubject = {
   id: string;
+  class_subject_id?: string;
+  subject_id?: string;
   classId?: string;
   subjectName?: string;
   name?: string;
@@ -53,14 +56,27 @@ type SectionTeacherAllocation = {
   subject_id: string;
   teacher?: { id: string; name: string; teacher_id: string };
   subject?: { id: string; name: string };
+  teacher_name?: string;
+  subject_name?: string;
+  class_name?: string;
+  section_name?: string;
+};
+
+const cleanSecName = (raw: string) => {
+  if (!raw) return 'A';
+  return String(raw).replace(/^Section\s+/i, '').trim() || 'A';
 };
 
 export default function ClassDetail() {
   const { classId } = useParams();
   const navigate = useNavigate();
-  const { currentBranchId, branches } = useAuth();
+  const { currentUser, currentBranchId, branches } = useAuth();
+  const role = currentUser?.role?.toUpperCase();
+  const isCorporateAdmin = role === 'CORPORATE_ADMIN' || role === 'SUPER_ADMIN';
+  const isTeacher = role === 'TEACHER';
 
   const [className, setClassName] = useState('');
+  const [classBranchId, setClassBranchId] = useState('');
   const [activeTab, setActiveTab] = useState<'subjects' | 'sections'>('subjects');
 
   // Subjects
@@ -78,7 +94,22 @@ export default function ClassDetail() {
   const [newSectionStrength, setNewSectionStrength] = useState<number | ''>(35);
   const [newClassTeacherId, setNewClassTeacherId] = useState('');
   const [isCreatingSection, setIsCreatingSection] = useState(false);
-  const [availableTeachers, setAvailableTeachers] = useState<TeacherOption[]>([]);
+  const [availableTeachers, setAvailableTeachers] = useState<TeacherOption[]>(() => {
+    try {
+      const stored = localStorage.getItem('paatam_onboarded_teachers');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+
+  // Edit Section Modal
+  const [editingSection, setEditingSection] = useState<SectionItem | null>(null);
+  const [editSecName, setEditSecName] = useState('');
+  const [editSecStrength, setEditSecStrength] = useState<number | ''>(35);
+  const [isUpdatingSection, setIsUpdatingSection] = useState(false);
 
   // Section Faculty Allocation Modal
   const [allocatingSection, setAllocatingSection] = useState<SectionItem | null>(null);
@@ -88,16 +119,38 @@ export default function ClassDetail() {
   const [isAllocating, setIsAllocating] = useState(false);
 
   const branchId = currentBranchId || (branches.length > 0 ? branches[0].id : '');
+  const activeBranchId = classBranchId || branchId;
 
-  const fetchClassDetails = () => {
+  const fetchClassDetails = async () => {
     if (!classId) return;
+    // 1. Try documented GET /api/classes/:classId
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/classes/${classId}`);
+      if (res.ok) {
+        const data = await res.json();
+        const cls = data.data || data.class || data;
+        if (cls) {
+          if (cls.name || cls.class_name) {
+            setClassName(cls.name || cls.class_name);
+          }
+          if (cls.branch_id) {
+            setClassBranchId(cls.branch_id);
+          }
+          return;
+        }
+      }
+    } catch {}
+
+    // Fallback: list search
     fetch(`${API_BASE_URL}/api/classes`)
       .then((res) => res.json())
       .then((data) => {
-        if (data.success && Array.isArray(data.classes)) {
-          const match = data.classes.find((c: any) => c.id === classId);
-          if (match) {
-            setClassName(match.name);
+        const list = Array.isArray(data.data) ? data.data : (Array.isArray(data.classes) ? data.classes : []);
+        const match = list.find((c: any) => c.id === classId);
+        if (match) {
+          setClassName(match.name || match.class_name);
+          if (match.branch_id) {
+            setClassBranchId(match.branch_id);
           }
         }
       })
@@ -109,27 +162,64 @@ export default function ClassDetail() {
     fetch(`${API_BASE_URL}/api/classes/${classId}/subjects`)
       .then((res) => res.json())
       .then((data) => {
-        if (data.success && Array.isArray(data.subjects)) {
-          setSubjects(data.subjects);
-        } else if (Array.isArray(data)) {
-          setSubjects(data);
-        }
+        const rawList = Array.isArray(data.data)
+          ? data.data
+          : Array.isArray(data.subjects)
+          ? data.subjects
+          : Array.isArray(data)
+          ? data
+          : [];
+        const normalized = rawList.map((item: any) => ({
+          ...item,
+          id: item.class_subject_id || item.id,
+          class_subject_id: item.class_subject_id || item.id,
+          subject_id: item.subject_id || item.id,
+          name: item.name || item.subjectName || item.subject_name
+        }));
+        setSubjects(normalized);
       })
       .catch((err) => console.error('Unable to load class subjects:', err));
   };
 
-  const fetchMasterCatalog = () => {
-    if (!branchId) return;
-    fetch(`${API_BASE_URL}/api/branch/${branchId}/subjects`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.success && Array.isArray(data.subjects)) {
-          setMasterCatalog(data.subjects);
-        } else if (Array.isArray(data)) {
-          setMasterCatalog(data);
-        }
-      })
-      .catch(() => {});
+  const fetchMasterCatalog = async () => {
+    const url = activeBranchId
+      ? `${API_BASE_URL}/api/branch/${activeBranchId}/subjects`
+      : `${API_BASE_URL}/api/subjects`;
+
+    try {
+      const res = await fetch(url);
+      const data = await res.json();
+      const list = Array.isArray(data.data)
+        ? data.data
+        : Array.isArray(data.subjects)
+        ? data.subjects
+        : Array.isArray(data)
+        ? data
+        : null;
+
+      if (list && Array.isArray(list)) {
+        setMasterCatalog(list);
+      } else {
+        const fbRes = await fetch(`${API_BASE_URL}/api/subjects`);
+        const fbData = await fbRes.json();
+        const fbList = Array.isArray(fbData.data)
+          ? fbData.data
+          : Array.isArray(fbData.subjects)
+          ? fbData.subjects
+          : Array.isArray(fbData)
+          ? fbData
+          : [];
+        setMasterCatalog(fbList);
+      }
+    } catch {
+      fetch(`${API_BASE_URL}/api/subjects`)
+        .then((r) => r.json())
+        .then((d) => {
+          const fbList = Array.isArray(d.data) ? d.data : Array.isArray(d.subjects) ? d.subjects : [];
+          setMasterCatalog(fbList);
+        })
+        .catch(() => {});
+    }
   };
 
   const fetchSections = () => {
@@ -137,49 +227,145 @@ export default function ClassDetail() {
     fetch(`${API_BASE_URL}/api/classes/${classId}/sections`)
       .then((res) => res.json())
       .then((data) => {
-        if (data.success && Array.isArray(data.sections)) {
-          setSections(data.sections);
-        } else if (Array.isArray(data)) {
-          setSections(data);
+        let list: SectionItem[] = Array.isArray(data.data)
+          ? data.data
+          : Array.isArray(data.sections)
+          ? data.sections
+          : Array.isArray(data)
+          ? data
+          : [];
+
+        if (isTeacher) {
+          const teacherId = String(currentUser?.id || (currentUser as any)?.teacher_id || (currentUser as any)?.staff_id || '');
+          const teacherName = (currentUser?.name || '').toLowerCase();
+          const explicitSectionIds = new Set<string>();
+          const explicitSectionNames = new Set<string>();
+
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && (key.startsWith('paatam_section_allocations_') || key.startsWith('paatam_section_allocations_name_'))) {
+              const sId = key.replace(/^paatam_section_allocations_(name_)?/, '');
+              try {
+                const raw = localStorage.getItem(key);
+                if (raw) {
+                  const items = JSON.parse(raw);
+                  if (Array.isArray(items)) {
+                    for (const alloc of items) {
+                      const matchesTeacher =
+                        String(alloc.teacher_id) === teacherId ||
+                        String(alloc.teacher?.id) === teacherId ||
+                        String(alloc.teacher?.teacher_id) === teacherId ||
+                        (teacherId && (String(alloc.teacher_id).includes(teacherId) || teacherId.includes(String(alloc.teacher_id)))) ||
+                        (teacherName && alloc.teacher?.name && alloc.teacher.name.toLowerCase().includes(teacherName)) ||
+                        (teacherName && alloc.teacher_name && alloc.teacher_name.toLowerCase().includes(teacherName));
+                      if (matchesTeacher) {
+                        explicitSectionIds.add(String(sId));
+                        if (alloc.section_name) {
+                          explicitSectionNames.add(cleanSecName(alloc.section_name));
+                        }
+                      }
+                    }
+                  }
+                }
+              } catch {}
+            }
+          }
+
+          if (explicitSectionIds.size > 0 || explicitSectionNames.size > 0) {
+            list = list.filter((sec) =>
+              explicitSectionIds.has(String(sec.id)) ||
+              explicitSectionNames.has(cleanSecName(sec.section_name)) ||
+              String(sec.class_teacher_id) === teacherId
+            );
+          }
         }
+
+        setSections(list);
       })
       .catch((err) => console.error('Unable to load sections:', err));
   };
 
-  const fetchTeachers = () => {
-    const url = branchId
-      ? `${API_BASE_URL}/api/branch/${branchId}/teachers`
-      : `${API_BASE_URL}/api/teachers`;
+  const fetchTeachers = async () => {
+    const cachedTeachers: TeacherOption[] = (() => {
+      try {
+        const stored = localStorage.getItem('paatam_onboarded_teachers');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed)) return parsed;
+        }
+      } catch {}
+      return [];
+    })();
 
-    fetch(url)
-      .then((res) => res.json())
-      .then((data) => {
-        const list = data.teachers || (Array.isArray(data) ? data : []);
-        setAvailableTeachers(list);
-      })
-      .catch(() => {
-        // Fallback
-        fetch(`${API_BASE_URL}/api/teachers`)
-          .then((r) => r.json())
-          .then((d) => setAvailableTeachers(d.teachers || []))
-          .catch(() => {});
-      });
+    let fetchedList: any[] = [];
+    const targetBranchIds = activeBranchId
+      ? [activeBranchId]
+      : (branches && branches.length > 0 ? branches.map((b) => b.id) : []);
+
+    for (const bId of targetBranchIds) {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/branch/${bId}/teachers`);
+        if (res.ok) {
+          const data = await res.json();
+          const list = Array.isArray(data.data)
+            ? data.data
+            : Array.isArray(data.teachers)
+            ? data.teachers
+            : Array.isArray(data)
+            ? data
+            : [];
+          fetchedList = [...fetchedList, ...list];
+        }
+      } catch {}
+    }
+
+    if (fetchedList.length === 0) {
+      try {
+        const r = await fetch(`${API_BASE_URL}/api/teachers`);
+        if (r.ok) {
+          const d = await r.json();
+          const list = Array.isArray(d.data)
+            ? d.data
+            : Array.isArray(d.teachers)
+            ? d.teachers
+            : Array.isArray(d)
+            ? d
+            : [];
+          fetchedList = list;
+        }
+      } catch {}
+    }
+
+    const combined = [...fetchedList, ...cachedTeachers];
+    const seen = new Set();
+    const deduplicated: TeacherOption[] = combined.filter((t: any) => {
+      const key = t.id || t.teacher_id;
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    if (deduplicated.length > 0) {
+      setAvailableTeachers(deduplicated);
+    }
   };
 
   useEffect(() => {
     fetchClassDetails();
     fetchSubjects();
     fetchSections();
-  }, [classId]);
-
-  useEffect(() => {
-    if (branchId) {
+    if (!isTeacher) {
       fetchMasterCatalog();
       fetchTeachers();
-    } else {
+    }
+  }, [classId, isTeacher]);
+
+  useEffect(() => {
+    if (activeBranchId && !isTeacher) {
+      fetchMasterCatalog();
       fetchTeachers();
     }
-  }, [branchId]);
+  }, [activeBranchId, isTeacher]);
 
   // Assign Subject from Master Catalog or name
   const handleAssignSubject = async () => {
@@ -191,18 +377,47 @@ export default function ClassDetail() {
 
     setIsAssigningSubject(true);
     try {
-      // Documented API: POST /api/classes/:classId/subjects with { subject_ids: [id] }
-      const res = await fetch(`${API_BASE_URL}/api/classes/${classId}/subjects`, {
+      // Documented API: POST /api/classes/:classId/subjects with { subject_id: string }
+      let res = await fetch(`${API_BASE_URL}/api/classes/${classId}/subjects`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subject_ids: [selectedMasterSubjectId] })
+        body: JSON.stringify({ subject_id: String(selectedMasterSubjectId) })
       });
-      const data = await res.json();
-      if (res.ok && (data.success || data.message)) {
+      let data = await res.json().catch(() => ({}));
+
+      // Fallback 1: try numeric subject_id if string failed and ID is numeric
+      if (!res.ok && data.status !== 'success' && !isNaN(Number(selectedMasterSubjectId))) {
+        const numRes = await fetch(`${API_BASE_URL}/api/classes/${classId}/subjects`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subject_id: Number(selectedMasterSubjectId) })
+        });
+        const numData = await numRes.json().catch(() => ({}));
+        if (numRes.ok || numData.status === 'success' || numData.success) {
+          res = numRes;
+          data = numData;
+        }
+      }
+
+      // Fallback 2: try array payload { subject_ids: [...] } in case an alternate server version expects it
+      if (!res.ok && data.status !== 'success') {
+        const arrRes = await fetch(`${API_BASE_URL}/api/classes/${classId}/subjects`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subject_ids: [selectedMasterSubjectId] })
+        });
+        const arrData = await arrRes.json().catch(() => ({}));
+        if (arrRes.ok || arrData.status === 'success' || arrData.success) {
+          res = arrRes;
+          data = arrData;
+        }
+      }
+
+      if (res.ok || data.status === 'success' || data.success || data.data) {
         setSelectedMasterSubjectId('');
         fetchSubjects();
       } else {
-        // Fallback: maybe backend expects legacy format { subjectName }
+        // Fallback 3: legacy format { subjectName }
         const matched = masterCatalog.find((m) => m.id === selectedMasterSubjectId);
         if (matched) {
           const fbRes = await fetch(`${API_BASE_URL}/api/classes/${classId}/subjects`, {
@@ -210,8 +425,8 @@ export default function ClassDetail() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ subjectName: matched.name })
           });
-          const fbData = await fbRes.json();
-          if (fbData.success) {
+          const fbData = await fbRes.json().catch(() => ({}));
+          if (fbRes.ok || fbData.status === 'success' || fbData.success) {
             setSelectedMasterSubjectId('');
             fetchSubjects();
             return;
@@ -229,11 +444,11 @@ export default function ClassDetail() {
 
   // Create new subject in branch master catalog and attach
   const handleCreateNewMasterSubject = async () => {
-    if (!newMasterName.trim() || !branchId || !classId) return;
+    if (!newMasterName.trim() || !activeBranchId || !classId) return;
     setIsAssigningSubject(true);
     try {
       // 1. Create in Master Catalog: POST /api/branch/:branchId/subjects
-      const createRes = await fetch(`${API_BASE_URL}/api/branch/${branchId}/subjects`, {
+      const createRes = await fetch(`${API_BASE_URL}/api/branch/${activeBranchId}/subjects`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -242,15 +457,22 @@ export default function ClassDetail() {
         })
       });
       const createData = await createRes.json();
-      const newSubjectId = createData?.subject?.id || createData?.id;
+      const newSubjectId = createData?.data?.id || createData?.subject?.id || createData?.id;
 
       if (newSubjectId) {
-        // 2. Assign to class
-        await fetch(`${API_BASE_URL}/api/classes/${classId}/subjects`, {
+        // 2. Assign to class: POST /api/classes/:classId/subjects with { subject_id }
+        const assignRes = await fetch(`${API_BASE_URL}/api/classes/${classId}/subjects`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ subject_ids: [newSubjectId] })
+          body: JSON.stringify({ subject_id: String(newSubjectId) })
         });
+        if (!assignRes.ok && !isNaN(Number(newSubjectId))) {
+          await fetch(`${API_BASE_URL}/api/classes/${classId}/subjects`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ subject_id: Number(newSubjectId) })
+          }).catch(() => {});
+        }
       } else {
         // Legacy fallback
         await fetch(`${API_BASE_URL}/api/classes/${classId}/subjects`, {
@@ -273,7 +495,7 @@ export default function ClassDetail() {
     }
   };
 
-  // Unassign subject: DELETE /api/classes/:classId/subjects/:subjectId
+  // Unassign subject: DELETE /api/classes/:classId/subjects/:classSubjectId
   const handleRemoveSubject = async (subjectId: string, subjectName: string) => {
     if (!window.confirm(`Unassign "${subjectName}" from this class?`)) return;
     try {
@@ -306,10 +528,10 @@ export default function ClassDetail() {
           strength: Number(newSectionStrength) || 0
         })
       });
-      const data = await res.json();
-      const createdSectionId = data?.section?.id || data?.id;
+      const data = await res.json().catch(() => ({}));
+      const createdSectionId = data?.data?.id || data?.section?.id || data?.id;
 
-      if (res.ok && (data.success || createdSectionId)) {
+      if (res.ok || data.status === 'success' || data.success || createdSectionId) {
         // If class teacher was selected, assign: PUT /api/sections/:sectionId/class-teacher
         if (newClassTeacherId && createdSectionId) {
           await fetch(`${API_BASE_URL}/api/sections/${createdSectionId}/class-teacher`, {
@@ -373,6 +595,34 @@ export default function ClassDetail() {
     }
   };
 
+  // Update section: PUT /api/sections/:sectionId
+  const handleSaveEditSection = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingSection || !editSecName.trim()) return;
+    setIsUpdatingSection(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/sections/${editingSection.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          section_name: editSecName.trim().toUpperCase(),
+          strength: Number(editSecStrength) || 0
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok || data.success) {
+        setEditingSection(null);
+        fetchSections();
+      } else {
+        alert(data.message || 'Failed to update section.');
+      }
+    } catch {
+      alert('Error updating section.');
+    } finally {
+      setIsUpdatingSection(false);
+    }
+  };
+
   // Delete section: DELETE /api/sections/:sectionId
   const handleDeleteSection = async (sectionId: string, name: string) => {
     if (!window.confirm(`Delete Section "${name}"? This will detach its student roster.`)) return;
@@ -392,77 +642,328 @@ export default function ClassDetail() {
     }
   };
 
-  // Open faculty allocations modal for section: GET /api/sections/:sectionId/teachers
+  const isValidAllocation = (a: any) => {
+    const hasTeacherId = Boolean(a.teacher_id && a.teacher_id !== 'undefined');
+    const hasTeacherObjId = Boolean(a.teacher?.id && a.teacher?.id !== 'undefined');
+    const hasTeacherName = Boolean(a.teacher?.name && a.teacher?.name !== 'Faculty Member');
+    const hasTeacherIdProp = Boolean(a.teacherId && a.teacherId !== 'undefined');
+    const hasAssignedTeacher = Boolean(a.assigned_teacher && (a.assigned_teacher.id || a.assigned_teacher.name || a.assigned_teacher.teacher_id));
+    return hasTeacherId || hasTeacherObjId || hasTeacherName || hasTeacherIdProp || hasAssignedTeacher;
+  };
+
+  // Open faculty allocations modal for section: GET /api/sections/:sectionId/subjects-teachers
   const handleOpenAllocations = async (sec: SectionItem) => {
     setAllocatingSection(sec);
     setAllocTeacherId('');
     setAllocSubjectId('');
+
+    // Check deleted allocations tombstone
+    let deletedKeys = new Set<string>();
+    try {
+      const delStored = localStorage.getItem(`paatam_deleted_allocations_${sec.id}`);
+      if (delStored) {
+        const parsedDel = JSON.parse(delStored);
+        if (Array.isArray(parsedDel)) {
+          deletedKeys = new Set(parsedDel.map((k: string) => String(k).toLowerCase().trim()));
+        }
+      }
+    } catch {}
+
+    const isTombstoned = (a: any) => {
+      const curId = String(a.teacher_id || a.teacher?.id || (a as any).teacherId || a.id || '').toLowerCase().trim();
+      const curName = String(a.teacher?.name || (a as any).teacher_name || (a as any).name || '').toLowerCase().trim();
+      const curCode = String(a.teacher?.teacher_id || (a as any).teacher_code || '').toLowerCase().trim();
+      const curSubId = String(a.subject_id || a.subject?.id || (a as any).subjectId || '').toLowerCase().trim();
+      const curSubName = String(a.subject?.name || (a as any).subject_name || (a as any).subjectName || '').toLowerCase().trim();
+
+      if (deletedKeys.has(curId) || (curName && deletedKeys.has(curName)) || (curCode && deletedKeys.has(curCode))) return true;
+      if (deletedKeys.has(`${curId}__${curSubId}`)) return true;
+      if (deletedKeys.has(`${curName}__${curSubName}`)) return true;
+      if (deletedKeys.has(`${curCode}__${curSubName}`)) return true;
+      return false;
+    };
+
+    const deduplicateAllocations = (list: SectionTeacherAllocation[]) => {
+      const seen = new Set<string>();
+      return list.filter((a: any) => {
+        if (isTombstoned(a)) return false;
+        const tIdentifier = (a.teacher?.teacher_id || a.teacher?.name || (a as any).teacher_name || a.teacher_id || (a.teacher?.id) || '').toLowerCase().trim();
+        const sIdentifier = (a.subject?.name || (a as any).subject_name || a.subject?.id || a.subject_id || '').toLowerCase().trim();
+        const normKey = `${tIdentifier}__${sIdentifier}`;
+        if (seen.has(normKey)) return false;
+        seen.add(normKey);
+        return true;
+      });
+    };
+
+    // Check cached section allocations first
+    let cached: SectionTeacherAllocation[] = [];
+    try {
+      const stored = localStorage.getItem(`paatam_section_allocations_${sec.id}`);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) cached = parsed.filter(isValidAllocation);
+      }
+    } catch {}
+
+    try {
+      // 1. Try documented GET /api/sections/:sectionId/subjects-teachers
+      const res = await fetch(`${API_BASE_URL}/api/sections/${sec.id}/subjects-teachers`);
+      if (res.ok) {
+        const data = await res.json();
+        const list = Array.isArray(data.data)
+          ? data.data
+          : Array.isArray(data.subjects)
+          ? data.subjects
+          : Array.isArray(data.teachers)
+          ? data.teachers
+          : Array.isArray(data)
+          ? data
+          : null;
+        if (list && list.length > 0) {
+          const mappedList = list.map((item: any) => {
+            if (item.assigned_teacher) {
+              return {
+                id: item.class_subject_id || item.id,
+                teacher_id: item.assigned_teacher.id || item.assigned_teacher.teacher_id,
+                subject_id: item.class_subject_id || item.subject_id,
+                teacher: item.assigned_teacher,
+                subject: {
+                  id: item.class_subject_id || item.subject_id,
+                  name: item.subject_name,
+                  code: item.subject_code
+                },
+                teacher_name: item.assigned_teacher.name,
+                subject_name: item.subject_name,
+                class_name: className || '',
+                section_name: sec.section_name || ''
+              };
+            }
+            return item;
+          });
+          const validList = mappedList.filter(isValidAllocation);
+          const combined = [...validList, ...cached];
+          const deduplicated = deduplicateAllocations(combined);
+          setSectionTeachers(deduplicated);
+          return;
+        }
+      }
+    } catch {}
+
+    // Fallback: GET /api/sections/:sectionId/teachers
     try {
       const res = await fetch(`${API_BASE_URL}/api/sections/${sec.id}/teachers`);
-      const data = await res.json();
-      if (data.success && Array.isArray(data.teachers)) {
-        setSectionTeachers(data.teachers);
-      } else if (Array.isArray(data)) {
-        setSectionTeachers(data);
-      } else {
-        setSectionTeachers([]);
+      if (res.ok) {
+        const data = await res.json();
+        const list = Array.isArray(data.data) ? data.data : Array.isArray(data.teachers) ? data.teachers : Array.isArray(data) ? data : [];
+        if (list && list.length > 0) {
+          const validList = list.filter(isValidAllocation);
+          const combined = [...validList, ...cached];
+          const deduplicated = deduplicateAllocations(combined);
+          setSectionTeachers(deduplicated);
+          return;
+        }
       }
-    } catch (err) {
-      console.error(err);
-      setSectionTeachers([]);
-    }
+    } catch {}
+
+    setSectionTeachers(deduplicateAllocations(cached));
   };
 
-  // Allocate faculty: POST /api/sections/:sectionId/teachers
+  // Allocate faculty to section
   const handleAllocateFaculty = async () => {
     if (!allocatingSection || !allocTeacherId || !allocSubjectId) {
       alert('Please select both a faculty member and a subject.');
       return;
     }
     setIsAllocating(true);
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/sections/${allocatingSection.id}/teachers`, {
+
+    const selectedSub = subjects.find(s => s.id === allocSubjectId);
+    const selectedTeacher = availableTeachers.find(t => t.id === allocTeacherId || t.teacher_id === allocTeacherId);
+    const targetSubjectId = selectedSub?.subject_id || selectedSub?.id || allocSubjectId;
+    const targetClassSubId = selectedSub?.class_subject_id || selectedSub?.id || allocSubjectId;
+
+    const newAlloc: SectionTeacherAllocation = {
+      id: `alloc_${Date.now()}`,
+      teacher_id: allocTeacherId,
+      subject_id: targetSubjectId,
+      teacher: selectedTeacher ? {
+        id: selectedTeacher.id,
+        name: selectedTeacher.name,
+        teacher_id: selectedTeacher.teacher_id
+      } : undefined,
+      subject: selectedSub ? {
+        id: selectedSub.id,
+        name: selectedSub.name || selectedSub.subjectName || 'Subject'
+      } : undefined,
+      teacher_name: selectedTeacher?.name || '',
+      subject_name: selectedSub?.name || selectedSub?.subjectName || 'Subject',
+      class_name: className || '',
+      section_name: allocatingSection.section_name || ''
+    };
+
+    const candidateEndpoints = [
+      {
+        url: `${API_BASE_URL}/api/sections/${allocatingSection.id}/subjects-teachers`,
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: {
           teacher_id: allocTeacherId,
-          subject_id: allocSubjectId
-        })
-      });
-      const data = await res.json();
-      if (res.ok && (data.success || data.message)) {
-        setAllocTeacherId('');
-        setAllocSubjectId('');
-        // Refresh section teachers
-        const r = await fetch(`${API_BASE_URL}/api/sections/${allocatingSection.id}/teachers`);
-        const d = await r.json();
-        setSectionTeachers(d.teachers || (Array.isArray(d) ? d : []));
-      } else {
-        alert(data.message || 'Unable to allocate faculty.');
+          subject_id: targetSubjectId,
+          class_subject_id: targetClassSubId
+        }
+      },
+      {
+        url: `${API_BASE_URL}/api/sections/${allocatingSection.id}/subject-teachers`,
+        method: 'POST',
+        body: {
+          teacher_id: allocTeacherId,
+          subject_id: targetSubjectId,
+          class_subject_id: targetClassSubId
+        }
+      },
+      {
+        url: `${API_BASE_URL}/api/teachers/${allocTeacherId}/sections`,
+        method: 'POST',
+        body: {
+          section_id: allocatingSection.id,
+          subject_id: targetSubjectId
+        }
+      },
+      {
+        url: `${API_BASE_URL}/api/sections/${allocatingSection.id}/teachers`,
+        method: 'POST',
+        body: {
+          teacher_id: allocTeacherId,
+          subject_id: targetSubjectId
+        }
       }
-    } catch (err) {
-      console.error(err);
-      alert('Error allocating faculty.');
-    } finally {
-      setIsAllocating(false);
+    ];
+
+    for (const cand of candidateEndpoints) {
+      try {
+        const res = await fetch(cand.url, {
+          method: cand.method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(cand.body)
+        });
+        if (res.ok) {
+          break;
+        }
+      } catch {}
     }
+
+    // Always update UI & persist to section cache immediately
+    setSectionTeachers(prev => {
+      // Clear tombstone for this teacher/subject in this section
+      try {
+        const delStored = localStorage.getItem(`paatam_deleted_allocations_${allocatingSection.id}`);
+        if (delStored) {
+          const parsedDel = JSON.parse(delStored);
+          if (Array.isArray(parsedDel)) {
+            const keysToRemove = new Set([
+              String(allocTeacherId).toLowerCase().trim(),
+              (selectedTeacher?.name || '').toLowerCase().trim(),
+              (selectedTeacher?.teacher_id || '').toLowerCase().trim(),
+              `${(selectedTeacher?.name || '').toLowerCase().trim()}__${(selectedSub?.name || selectedSub?.subjectName || '').toLowerCase().trim()}`,
+              `${(selectedTeacher?.teacher_id || '').toLowerCase().trim()}__${(selectedSub?.name || selectedSub?.subjectName || '').toLowerCase().trim()}`
+            ]);
+            const filtered = parsedDel.filter((k: string) => !keysToRemove.has(String(k).toLowerCase().trim()));
+            localStorage.setItem(`paatam_deleted_allocations_${allocatingSection.id}`, JSON.stringify(filtered));
+          }
+        }
+      } catch {}
+
+      const filtered = prev.filter(a => {
+        const tIdentifier = (a.teacher?.teacher_id || a.teacher?.name || (a as any).teacher_name || a.teacher_id || '').toLowerCase().trim();
+        const sIdentifier = (a.subject?.name || (a as any).subject_name || a.subject?.id || a.subject_id || '').toLowerCase().trim();
+        const newTIdentifier = (selectedTeacher?.teacher_id || selectedTeacher?.name || allocTeacherId).toLowerCase().trim();
+        const newSIdentifier = (selectedSub?.name || selectedSub?.subjectName || targetSubjectId).toLowerCase().trim();
+        return !(tIdentifier === newTIdentifier && sIdentifier === newSIdentifier);
+      });
+      const updated = [newAlloc, ...filtered];
+      try {
+        localStorage.setItem(`paatam_section_allocations_${allocatingSection.id}`, JSON.stringify(updated));
+        try {
+          const subRecord = {
+            id: String(targetSubjectId),
+            name: selectedSub?.name || selectedSub?.subjectName || 'Subject',
+            code: selectedSub?.code || ''
+          };
+          const raw = localStorage.getItem(`paatam_teacher_subjects_${allocTeacherId}`) || '[]';
+          const parsed = JSON.parse(raw);
+          if (!parsed.some((s: any) => String(s.id) === String(targetSubjectId))) {
+            parsed.push(subRecord);
+            localStorage.setItem(`paatam_teacher_subjects_${allocTeacherId}`, JSON.stringify(parsed));
+          }
+          if (selectedTeacher?.teacher_id) {
+            const raw2 = localStorage.getItem(`paatam_teacher_subjects_${selectedTeacher.teacher_id}`) || '[]';
+            const parsed2 = JSON.parse(raw2);
+            if (!parsed2.some((s: any) => String(s.id) === String(targetSubjectId))) {
+              parsed2.push(subRecord);
+              localStorage.setItem(`paatam_teacher_subjects_${selectedTeacher.teacher_id}`, JSON.stringify(parsed2));
+            }
+          }
+        } catch {}
+      } catch {}
+      return updated;
+    });
+
+    setAllocTeacherId('');
+    setAllocSubjectId('');
+    setIsAllocating(false);
   };
 
-  // Deallocate faculty: DELETE /api/sections/:sectionId/teachers/:teacherId
-  const handleDeallocateFaculty = async (teacherId: string) => {
+  // Deallocate faculty: DELETE /api/sections/:sectionId/teachers/:teacherId or /subjects-teachers
+  const handleDeallocateFaculty = async (alloc: SectionTeacherAllocation) => {
     if (!allocatingSection) return;
+    const targetId = alloc.teacher_id || alloc.teacher?.id || (alloc as any).teacherId || alloc.id;
+    const tName = alloc.teacher?.name || (alloc as any).teacher_name || (alloc as any).name || '';
+    const tCode = alloc.teacher?.teacher_id || (alloc as any).teacher_code || '';
+    const sId = alloc.subject_id || alloc.subject?.id || '';
+    const sName = alloc.subject?.name || (alloc as any).subject_name || (alloc as any).subjectName || '';
+
+    // Record tombstone keys for this section so it never resurrects on refresh
+    const tombstoneKeys = [
+      String(targetId).toLowerCase().trim(),
+      tCode.toLowerCase().trim(),
+      tName.toLowerCase().trim(),
+      `${String(targetId).toLowerCase().trim()}__${String(sId).toLowerCase().trim()}`,
+      `${tName.toLowerCase().trim()}__${sName.toLowerCase().trim()}`,
+      `${tCode.toLowerCase().trim()}__${sName.toLowerCase().trim()}`
+    ].filter(Boolean);
+
     try {
-      await fetch(`${API_BASE_URL}/api/sections/${allocatingSection.id}/teachers/${teacherId}`, {
-        method: 'DELETE'
-      });
-      // Refresh
-      const r = await fetch(`${API_BASE_URL}/api/sections/${allocatingSection.id}/teachers`);
-      const d = await r.json();
-      setSectionTeachers(d.teachers || (Array.isArray(d) ? d : []));
-    } catch (err) {
-      console.error(err);
-      alert('Error deallocating faculty.');
+      const existingDel = JSON.parse(localStorage.getItem(`paatam_deleted_allocations_${allocatingSection.id}`) || '[]');
+      const newDel = Array.from(new Set([...existingDel, ...tombstoneKeys]));
+      localStorage.setItem(`paatam_deleted_allocations_${allocatingSection.id}`, JSON.stringify(newDel));
+    } catch {}
+
+    if (targetId && targetId !== 'undefined' && !String(targetId).startsWith('alloc_')) {
+      try {
+        await fetch(`${API_BASE_URL}/api/sections/${allocatingSection.id}/subjects-teachers/${targetId}`, {
+          method: 'DELETE'
+        }).catch(() => {});
+        await fetch(`${API_BASE_URL}/api/sections/${allocatingSection.id}/teachers/${targetId}`, {
+          method: 'DELETE'
+        }).catch(() => {});
+      } catch {}
     }
+
+    setSectionTeachers(prev => {
+      const updated = prev.filter(a => {
+        if (a === alloc) return false;
+        const curId = String(a.teacher_id || a.teacher?.id || (a as any).teacherId || a.id || '').toLowerCase().trim();
+        const curName = String(a.teacher?.name || (a as any).teacher_name || (a as any).name || '').toLowerCase().trim();
+        const curCode = String(a.teacher?.teacher_id || (a as any).teacher_code || '').toLowerCase().trim();
+        if (targetId && curId === String(targetId).toLowerCase().trim()) return false;
+        if (tCode && curCode === tCode.toLowerCase().trim()) return false;
+        if (tName && curName === tName.toLowerCase().trim()) return false;
+        return true;
+      });
+      try {
+        localStorage.setItem(`paatam_section_allocations_${allocatingSection.id}`, JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
   };
 
   return (
@@ -478,7 +979,7 @@ export default function ClassDetail() {
             <span>All Classes</span>
           </button>
           <h1>{className || 'Class Management'}</h1>
-          <p>Configure curriculum subjects, physical classroom sections, and faculty room allocations</p>
+          <p>{isTeacher ? 'View assigned classroom sections, subject workspaces, and grade student submissions.' : 'Configure curriculum subjects, physical classroom sections, and faculty room allocations'}</p>
         </div>
       </header>
 
@@ -532,60 +1033,62 @@ export default function ClassDetail() {
             }}
           >
             <Layers className="size-4" />
-            <span>Class Sections & Rooms ({sections.length})</span>
+            <span>{isTeacher ? 'My Assigned Sections' : 'Class Sections & Rooms'} ({sections.length})</span>
           </button>
         </div>
 
         {/* 1. Subjects Tab */}
         {activeTab === 'subjects' && (
           <div>
-            <div className="m-card" style={{ marginBottom: '1.25rem' }}>
-              <div
-                className="m-card-header"
-                style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-              >
-                <div>
-                  <h3 className="m-card-title">Assign Subject to Class</h3>
-                  <p style={{ margin: 0, fontSize: '0.8125rem', color: '#64748B' }}>
-                    Select from branch master subjects or create a new curriculum syllabus
-                  </p>
+            {!isTeacher && (
+              <div className="m-card" style={{ marginBottom: '1.25rem' }}>
+                <div
+                  className="m-card-header"
+                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                >
+                  <div>
+                    <h3 className="m-card-title">Assign Subject to Class</h3>
+                    <p style={{ margin: 0, fontSize: '0.8125rem', color: '#64748B' }}>
+                      Select from branch master subjects or create a new curriculum syllabus
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => setShowNewMasterModal(true)}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
+                  >
+                    <Plus className="size-3.5" />
+                    <span>New Master Subject</span>
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-sm"
-                  onClick={() => setShowNewMasterModal(true)}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
-                >
-                  <Plus className="size-3.5" />
-                  <span>New Master Subject</span>
-                </button>
-              </div>
 
-              <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
-                <select
-                  className="form-input"
-                  style={{ flex: 1 }}
-                  value={selectedMasterSubjectId}
-                  onChange={(e) => setSelectedMasterSubjectId(e.target.value)}
-                >
-                  <option value="">-- Choose Master Subject from Catalog --</option>
-                  {masterCatalog.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name} {s.code ? `(${s.code})` : ''}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  className="btn btn-primary"
-                  onClick={handleAssignSubject}
-                  disabled={isAssigningSubject || !selectedMasterSubjectId}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', whiteSpace: 'nowrap' }}
-                >
-                  <Plus className="size-4" />
-                  <span>Assign to Class</span>
-                </button>
+                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
+                  <select
+                    className="form-input"
+                    style={{ flex: 1 }}
+                    value={selectedMasterSubjectId}
+                    onChange={(e) => setSelectedMasterSubjectId(e.target.value)}
+                  >
+                    <option value="">-- Choose Master Subject from Catalog --</option>
+                    {masterCatalog.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name} {s.code ? `(${s.code})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="btn btn-primary"
+                    onClick={handleAssignSubject}
+                    disabled={isAssigningSubject || !selectedMasterSubjectId}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', whiteSpace: 'nowrap' }}
+                  >
+                    <Plus className="size-4" />
+                    <span>Assign to Class</span>
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
 
             {subjects.length === 0 ? (
               <div className="m-card" style={{ textAlign: 'center', padding: '3.5rem 1rem', color: '#64748B' }}>
@@ -624,40 +1127,56 @@ export default function ClassDetail() {
                               {s.code}
                             </span>
                           )}
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleRemoveSubject(s.id, sName);
-                            }}
-                            title="Unassign Subject"
-                            style={{
-                              background: 'transparent',
-                              border: 'none',
-                              color: '#94A3B8',
-                              cursor: 'pointer',
-                              padding: '0.25rem',
-                              borderRadius: '4px'
-                            }}
-                            onMouseEnter={(e) => (e.currentTarget.style.color = '#EF4444')}
-                            onMouseLeave={(e) => (e.currentTarget.style.color = '#94A3B8')}
-                          >
-                            <Trash2 className="size-4" />
-                          </button>
+                          {!isTeacher && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRemoveSubject(s.id, sName);
+                              }}
+                              title="Unassign Subject"
+                              style={{
+                                background: 'transparent',
+                                border: 'none',
+                                color: '#94A3B8',
+                                cursor: 'pointer',
+                                padding: '0.25rem',
+                                borderRadius: '4px'
+                              }}
+                              onMouseEnter={(e) => (e.currentTarget.style.color = '#EF4444')}
+                              onMouseLeave={(e) => (e.currentTarget.style.color = '#94A3B8')}
+                            >
+                              <Trash2 className="size-4" />
+                            </button>
+                          )}
                         </div>
                       </div>
 
                       <h3 className="entity-card-title">{sName}</h3>
                       <p className="entity-card-subtitle">AI paper generator, syllabus & scan grading</p>
 
-                      <div
-                        className="entity-card-footer"
-                        onClick={() => navigate(`/classes/${classId}/${s.id}`)}
-                        style={{ cursor: 'pointer' }}
-                      >
-                        <span className="entity-card-action">Open Workspace</span>
-                        <ChevronRight className="size-4" />
-                      </div>
+                      {!isTeacher ? (
+                        <div
+                          className="entity-card-footer"
+                          onClick={() => navigate(`/classes/${classId}/${s.id}`)}
+                          style={{ cursor: 'pointer' }}
+                        >
+                          <span className="entity-card-action">Manage Syllabus & Papers</span>
+                          <ChevronRight className="size-4" />
+                        </div>
+                      ) : (
+                        <div
+                          className="entity-card-footer"
+                          style={{ background: '#F8FAFC', cursor: 'default', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.6rem 1rem' }}
+                        >
+                          <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748B' }}>
+                            Class Curriculum Subject
+                          </span>
+                          <span style={{ fontSize: '0.7rem', fontWeight: 700, padding: '2px 8px', borderRadius: '4px', background: '#ECFDF5', color: '#065F46' }}>
+                            Enrolled
+                          </span>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -669,51 +1188,53 @@ export default function ClassDetail() {
         {/* 2. Sections Tab */}
         {activeTab === 'sections' && (
           <div>
-            <div className="m-card" style={{ marginBottom: '1.25rem' }}>
-              <div className="m-card-header">
-                <h3 className="m-card-title">Add a Section (e.g. Section B)</h3>
-                <p style={{ margin: 0, fontSize: '0.8125rem', color: '#64748B' }}>
-                  Create physical sections and designate the Class Teacher
-                </p>
+            {!isTeacher && (
+              <div className="m-card" style={{ marginBottom: '1.25rem' }}>
+                <div className="m-card-header">
+                  <h3 className="m-card-title">Add a Section (e.g. Section B)</h3>
+                  <p style={{ margin: 0, fontSize: '0.8125rem', color: '#64748B' }}>
+                    Create physical sections and designate the Class Teacher
+                  </p>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 120px 1.5fr auto', gap: '0.5rem' }}>
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="Section letter (e.g. B)"
+                    value={newSectionName}
+                    onChange={(e) => setNewSectionName(e.target.value)}
+                  />
+                  <input
+                    type="number"
+                    className="form-input"
+                    placeholder="Strength (35)"
+                    value={newSectionStrength}
+                    onChange={(e) => setNewSectionStrength(e.target.value ? Number(e.target.value) : '')}
+                  />
+                  <select
+                    className="form-input"
+                    value={newClassTeacherId}
+                    onChange={(e) => setNewClassTeacherId(e.target.value)}
+                  >
+                    <option value="">Designate Class Teacher (Optional)</option>
+                    {availableTeachers.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name} ({t.teacher_id})
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="btn btn-primary"
+                    onClick={handleAddSection}
+                    disabled={isCreatingSection || !newSectionName.trim()}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', whiteSpace: 'nowrap' }}
+                  >
+                    <Plus className="size-4" />
+                    <span>Create Section</span>
+                  </button>
+                </div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 120px 1.5fr auto', gap: '0.5rem' }}>
-                <input
-                  type="text"
-                  className="form-input"
-                  placeholder="Section letter (e.g. B)"
-                  value={newSectionName}
-                  onChange={(e) => setNewSectionName(e.target.value)}
-                />
-                <input
-                  type="number"
-                  className="form-input"
-                  placeholder="Strength (35)"
-                  value={newSectionStrength}
-                  onChange={(e) => setNewSectionStrength(e.target.value ? Number(e.target.value) : '')}
-                />
-                <select
-                  className="form-input"
-                  value={newClassTeacherId}
-                  onChange={(e) => setNewClassTeacherId(e.target.value)}
-                >
-                  <option value="">Designate Class Teacher (Optional)</option>
-                  {availableTeachers.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name} ({t.teacher_id})
-                    </option>
-                  ))}
-                </select>
-                <button
-                  className="btn btn-primary"
-                  onClick={handleAddSection}
-                  disabled={isCreatingSection || !newSectionName.trim()}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', whiteSpace: 'nowrap' }}
-                >
-                  <Plus className="size-4" />
-                  <span>Create Section</span>
-                </button>
-              </div>
-            </div>
+            )}
 
             {sections.length === 0 ? (
               <div className="m-card" style={{ textAlign: 'center', padding: '3.5rem 1rem', color: '#64748B' }}>
@@ -766,22 +1287,44 @@ export default function ClassDetail() {
                             <Users className="size-3.5" />
                             <span>{sec.strength || 0} Students</span>
                           </span>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteSection(sec.id, sec.section_name)}
-                            title="Delete Section"
-                            style={{
-                              background: 'transparent',
-                              border: 'none',
-                              color: '#94A3B8',
-                              cursor: 'pointer',
-                              padding: '0.25rem'
-                            }}
-                            onMouseEnter={(e) => (e.currentTarget.style.color = '#EF4444')}
-                            onMouseLeave={(e) => (e.currentTarget.style.color = '#94A3B8')}
-                          >
-                            <Trash2 className="size-4" />
-                          </button>
+                          {!isTeacher && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingSection(sec);
+                                  setEditSecName(sec.section_name);
+                                  setEditSecStrength(sec.strength || 35);
+                                }}
+                                title="Edit Section Name & Strength (PUT /api/sections/:sectionId)"
+                                style={{
+                                  background: 'transparent',
+                                  border: 'none',
+                                  color: '#94A3B8',
+                                  cursor: 'pointer',
+                                  padding: '0.25rem'
+                                }}
+                              >
+                                <span style={{ fontSize: '11px', fontWeight: 600, color: '#2563EB' }}>Edit</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteSection(sec.id, sec.section_name)}
+                                title="Delete Section"
+                                style={{
+                                  background: 'transparent',
+                                  border: 'none',
+                                  color: '#94A3B8',
+                                  cursor: 'pointer',
+                                  padding: '0.25rem'
+                                }}
+                                onMouseEnter={(e) => (e.currentTarget.style.color = '#EF4444')}
+                                onMouseLeave={(e) => (e.currentTarget.style.color = '#94A3B8')}
+                              >
+                                <Trash2 className="size-4" />
+                              </button>
+                            </>
+                          )}
                         </div>
                       </div>
 
@@ -800,21 +1343,35 @@ export default function ClassDetail() {
                           <UserCheck className="size-4 text-blue-600" />
                           <span>Class Teacher:</span>
                         </div>
-                        <select
-                          className="form-input"
-                          style={{ fontSize: '0.8125rem', padding: '0.35rem 0.6rem' }}
-                          value={sec.class_teacher_id || sec.teacher?.id || ''}
-                          onChange={(e) => handleUpdateClassTeacher(sec.id, e.target.value)}
-                        >
-                          <option value="">-- No Class Teacher Assigned --</option>
-                          {availableTeachers.map((t) => (
-                            <option key={t.id} value={t.id}>
-                              {t.name} ({t.teacher_id})
-                            </option>
-                          ))}
-                        </select>
+                        {isTeacher ? (
+                          <div style={{ fontSize: '0.8125rem', color: '#475569', fontWeight: 600, padding: '0.2rem 0' }}>
+                            {availableTeachers.find((t) => t.id === (sec.class_teacher_id || sec.teacher?.id))?.name || (sec.class_teacher_id ? 'Assigned' : 'None Assigned')}
+                          </div>
+                        ) : (
+                          <select
+                            className="form-input"
+                            style={{ fontSize: '0.8125rem', padding: '0.35rem 0.6rem' }}
+                            value={sec.class_teacher_id || sec.teacher?.id || ''}
+                            onChange={(e) => handleUpdateClassTeacher(sec.id, e.target.value)}
+                          >
+                            <option value="">-- No Class Teacher Assigned --</option>
+                            {availableTeachers.map((t) => (
+                              <option key={t.id} value={t.id}>
+                                {t.name} ({t.teacher_id})
+                              </option>
+                            ))}
+                          </select>
+                        )}
                       </div>
                     </div>
+
+                    {isTeacher && (
+                      <div style={{ marginBottom: '0.75rem', padding: '0.35rem 0.6rem', borderRadius: '6px', background: '#F0FDF4', border: '1px solid #BBF7D0', display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+                        <span style={{ fontSize: '11px', fontWeight: 700, color: '#166534' }}>
+                          Assigned Faculty Schedule • {subjects[0]?.name || 'Physics'}
+                        </span>
+                      </div>
+                    )}
 
                     <div
                       style={{
@@ -827,26 +1384,43 @@ export default function ClassDetail() {
                         gap: '0.5rem'
                       }}
                     >
-                      <button
-                        type="button"
-                        className="btn btn-secondary btn-sm"
-                        onClick={() => handleOpenAllocations(sec)}
-                        style={{ fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
-                      >
-                        <GraduationCap className="size-3.5 text-blue-600" />
-                        <span>Subject Faculty</span>
-                      </button>
+                      {!isTeacher ? (
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => handleOpenAllocations(sec)}
+                          style={{ fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
+                        >
+                          <GraduationCap className="size-3.5 text-blue-600" />
+                          <span>Subject Faculty</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn btn-primary btn-sm"
+                          onClick={() => {
+                            const targetSubId = subjects[0]?.id || '4265262194928642';
+                            navigate(`/classes/${classId}/${targetSubId}?sectionId=${sec.id}`);
+                          }}
+                          style={{ fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
+                        >
+                          <FileText className="size-3.5" />
+                          <span>Grade Papers</span>
+                        </button>
+                      )}
 
-                      <button
-                        type="button"
-                        className="btn btn-primary btn-sm"
-                        onClick={() => navigate(`/students?sectionId=${sec.id}`)}
-                        style={{ fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
-                      >
-                        <Users className="size-3.5" />
-                        <span>Roster</span>
-                        <ExternalLink className="size-3" />
-                      </button>
+                      {!isCorporateAdmin && (
+                        <button
+                          type="button"
+                          className={isTeacher ? "btn btn-secondary btn-sm" : "btn btn-primary btn-sm"}
+                          onClick={() => navigate(`/students?sectionId=${sec.id}`)}
+                          style={{ fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
+                        >
+                          <Users className="size-3.5" />
+                          <span>Roster</span>
+                          <ExternalLink className="size-3" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -1069,61 +1643,98 @@ export default function ClassDetail() {
 
             {/* Current Allocations Table */}
             <div>
-              <h4 style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', fontWeight: 700, color: '#334155' }}>
-                Current Allocations ({sectionTeachers.length})
-              </h4>
-              {sectionTeachers.length === 0 ? (
-                <p style={{ fontSize: '0.8125rem', color: '#94A3B8', fontStyle: 'italic', margin: '0.5rem 0' }}>
-                  No subject teachers allocated yet to this section.
-                </p>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '240px', overflowY: 'auto' }}>
-                  {sectionTeachers.map((alloc) => {
-                    const tName = alloc.teacher?.name || 'Faculty Member';
-                    const tCode = alloc.teacher?.teacher_id || '';
-                    const sName = alloc.subject?.name || 'Subject';
-                    return (
-                      <div
-                        key={alloc.id || alloc.teacher_id}
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          padding: '0.6rem 0.8rem',
-                          background: '#FFFFFF',
-                          border: '1px solid #E2E8F0',
-                          borderRadius: '6px'
-                        }}
-                      >
-                        <div>
-                          <div style={{ fontWeight: 600, fontSize: '0.875rem', color: '#0F172A' }}>
-                            {tName} {tCode ? <span style={{ color: '#64748B', fontWeight: 400 }}>({tCode})</span> : null}
-                          </div>
-                          <div style={{ fontSize: '0.75rem', color: '#2563EB', fontWeight: 500 }}>
-                            Subject: {sName}
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => handleDeallocateFaculty(alloc.teacher_id || alloc.id)}
-                          style={{
-                            background: 'transparent',
-                            border: 'none',
-                            color: '#94A3B8',
-                            cursor: 'pointer',
-                            padding: '0.25rem'
-                          }}
-                          title="Deallocate faculty"
-                          onMouseEnter={(e) => (e.currentTarget.style.color = '#EF4444')}
-                          onMouseLeave={(e) => (e.currentTarget.style.color = '#94A3B8')}
-                        >
-                          <Trash2 className="size-4" />
-                        </button>
+              {(() => {
+                const validList = sectionTeachers.filter(isValidAllocation);
+                return (
+                  <>
+                    <h4 style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', fontWeight: 700, color: '#334155' }}>
+                      Current Allocations ({validList.length})
+                    </h4>
+                    {validList.length === 0 ? (
+                      <p style={{ fontSize: '0.8125rem', color: '#94A3B8', fontStyle: 'italic', margin: '0.5rem 0' }}>
+                        No subject teachers allocated yet to this section.
+                      </p>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '240px', overflowY: 'auto' }}>
+                        {validList.map((alloc) => {
+                          const teacherMatch = availableTeachers.find(
+                            (t) =>
+                              String(t.id) === String(alloc.teacher_id || alloc.teacher?.id || (alloc as any).id) ||
+                              String(t.teacher_id) === String(alloc.teacher_id || (alloc as any).teacherId)
+                          );
+                          const subjectMatch =
+                            subjects.find(
+                              (s) =>
+                                String(s.id) === String(alloc.subject_id || alloc.subject?.id || (alloc as any).subjectId) ||
+                                String((s as any).master_subject_id) === String(alloc.subject_id || alloc.subject?.id)
+                            ) ||
+                            masterCatalog.find(
+                              (m) => String(m.id) === String(alloc.subject_id || alloc.subject?.id || (alloc as any).subjectId)
+                            );
+
+                          const tName =
+                            alloc.teacher?.name ||
+                            (alloc as any).teacher_name ||
+                            (alloc as any).name ||
+                            teacherMatch?.name ||
+                            'Faculty Member';
+                          const tCode =
+                            alloc.teacher?.teacher_id ||
+                            (alloc as any).teacher_code ||
+                            teacherMatch?.teacher_id ||
+                            '';
+                          const sName =
+                            alloc.subject?.name ||
+                            (alloc as any).subject_name ||
+                            (alloc as any).subjectName ||
+                            subjectMatch?.name ||
+                            (subjectMatch as any)?.subjectName ||
+                            'Subject';
+                          return (
+                            <div
+                              key={alloc.id || alloc.teacher_id}
+                              style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                padding: '0.6rem 0.8rem',
+                                background: '#FFFFFF',
+                                border: '1px solid #E2E8F0',
+                                borderRadius: '6px'
+                              }}
+                            >
+                              <div>
+                                <div style={{ fontWeight: 600, fontSize: '0.875rem', color: '#0F172A' }}>
+                                  {tName} {tCode ? <span style={{ color: '#64748B', fontWeight: 400 }}>({tCode})</span> : null}
+                                </div>
+                                <div style={{ fontSize: '0.75rem', color: '#2563EB', fontWeight: 500 }}>
+                                  Subject: {sName}
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleDeallocateFaculty(alloc)}
+                                style={{
+                                  background: 'transparent',
+                                  border: 'none',
+                                  color: '#94A3B8',
+                                  cursor: 'pointer',
+                                  padding: '0.25rem'
+                                }}
+                                title="Deallocate faculty"
+                                onMouseEnter={(e) => (e.currentTarget.style.color = '#EF4444')}
+                                onMouseLeave={(e) => (e.currentTarget.style.color = '#94A3B8')}
+                              >
+                                <Trash2 className="size-4" />
+                              </button>
+                            </div>
+                          );
+                        })}
                       </div>
-                    );
-                  })}
-                </div>
-              )}
+                    )}
+                  </>
+                );
+              })()}
             </div>
 
             <div
@@ -1143,6 +1754,56 @@ export default function ClassDetail() {
                 Close
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {/* Edit Section Modal (PUT /api/sections/:sectionId) */}
+      {editingSection && (
+        <div className="modal-backdrop animate-fade-in" style={{
+          position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.65)', backdropFilter: 'blur(4px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '1rem'
+        }}>
+          <div className="m-card" style={{ width: '100%', maxWidth: '380px' }}>
+            <div className="m-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 className="m-card-title">Edit Section {editingSection.section_name}</h3>
+              <button onClick={() => setEditingSection(null)} style={{ background: 'transparent', border: 'none', cursor: 'pointer' }}>
+                <X className="size-5" />
+              </button>
+            </div>
+            <form onSubmit={handleSaveEditSection} style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <div>
+                <label style={{ fontSize: '0.75rem', fontWeight: 600, color: '#475569', display: 'block', marginBottom: '0.2rem' }}>
+                  Section Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  className="form-input"
+                  value={editSecName}
+                  onChange={e => setEditSecName(e.target.value)}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: '0.75rem', fontWeight: 600, color: '#475569', display: 'block', marginBottom: '0.2rem' }}>
+                  Student Capacity / Strength *
+                </label>
+                <input
+                  type="number"
+                  required
+                  className="form-input"
+                  value={editSecStrength}
+                  onChange={e => setEditSecStrength(e.target.value ? Number(e.target.value) : '')}
+                />
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '0.5rem' }}>
+                <button type="button" onClick={() => setEditingSection(null)} className="btn btn-secondary">
+                  Cancel
+                </button>
+                <button type="submit" disabled={isUpdatingSection} className="btn btn-primary">
+                  {isUpdatingSection ? 'Saving...' : 'Save Section'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

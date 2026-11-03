@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../config/api';
+import { useAuth } from '../context/AuthContext';
 
 type ReviewQuestion = {
   questionNo: string; section: string; questionText: string; benchmarkKey: string;
@@ -14,7 +15,6 @@ type ReviewQuestion = {
 };
 
 const marksOf = (question: any) => Number.isFinite(Number(question?.marks)) && Number(question.marks) >= 0 ? Number(question.marks) : 5;
-const isPdfUrl = (url?: string) => Boolean(url && (/\.pdf(\?|#|$)/i.test(url) || url.startsWith('data:application/pdf') || url.includes('/pdf')));
 const ZOOM_STEP = 0.1;
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 3;
@@ -33,6 +33,8 @@ const getQuestionState = (scorePercent: number) => {
 export default function ReviewSubmission() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { role } = useAuth();
+  const isCorporateAdmin = ['CORPORATE_ADMIN', 'SUPER_ADMIN'].includes(role?.toUpperCase());
   const [submission, setSubmission] = useState<any>(null);
   const [questions, setQuestions] = useState<ReviewQuestion[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -143,23 +145,23 @@ export default function ReviewSubmission() {
   }, [id]);
 
   const studentPaperPdfUrl = useMemo<string>(() => {
-    if (!submission) return '/sample.pdf';
+    if (!submission) return '';
     const urls = submission.samplePaperUrls || submission.sample_paper_urls;
     if (Array.isArray(urls) && urls.length > 0) return urls[0];
-    return submission.samplePaperUrl || submission.sample_paper_url || 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf';
+    return submission.samplePaperUrl || submission.sample_paper_url || '';
   }, [submission]);
 
   const answerKeyPdfUrl = useMemo<string>(() => {
-    if (!submission) return '/answer_key.pdf';
-    return submission.assignment?.answerKeyUrl || submission.answerKeyUrl || submission.assignment?.pdfUrl || 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf';
+    if (!submission) return '';
+    return submission.assignment?.answerKeyUrl || submission.answerKeyUrl || submission.assignment?.pdfUrl || '';
   }, [submission]);
 
   const questionPaperPdfUrl = useMemo<string>(() => {
-    if (!submission) return '/question_paper.pdf';
-    return submission.assignment?.pdfUrl || submission.questionPaperUrl || submission.question_paper_url || 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf';
+    if (!submission) return '';
+    return submission.assignment?.pdfUrl || submission.questionPaperUrl || submission.question_paper_url || '';
   }, [submission]);
 
-  const totalMarks = useMemo(() => questions.reduce((sum, q) => sum + q.marks, 0) || 45, [questions]);
+  const totalMarks = useMemo(() => questions.reduce((sum, q) => sum + (q.marks || 0), 0), [questions]);
   const totalEarned = useMemo(() => questions.reduce((sum, q) => sum + q.earnedMarks, 0), [questions]);
   const totalPercent = useMemo(() => totalMarks > 0 ? Math.round((totalEarned / totalMarks) * 100) : 0, [totalEarned, totalMarks]);
 
@@ -305,10 +307,16 @@ export default function ReviewSubmission() {
             <span>{isDeleting ? 'Deleting…' : 'Delete'}</span>
           </button>
 
-          <button className="btn-approve-primary" onClick={approve} disabled={approved}>
-            <Check size={16} />
-            <span>{approved ? 'Approved' : 'Approve'}</span>
-          </button>
+          {!isCorporateAdmin ? (
+            <button className="btn-approve-primary" onClick={approve} disabled={approved}>
+              <Check size={16} />
+              <span>{approved ? 'Approved' : 'Approve'}</span>
+            </button>
+          ) : (
+            <span style={{ fontSize: '12px', fontWeight: 600, color: '#475569', background: '#F1F5F9', padding: '6px 12px', borderRadius: '6px' }}>
+              Inspection Mode (Corporate Super Admin)
+            </span>
+          )}
         </div>
       </header>
 
@@ -340,10 +348,12 @@ export default function ReviewSubmission() {
           </div>
 
           <div className="pdf-container-card">
-            {isPdfUrl(answerKeyPdfUrl) ? (
+            {answerKeyPdfUrl ? (
               <iframe className="pdf-frame" src={getPdfViewerSrc(answerKeyPdfUrl, answerKeyZoom)} title="Answer Key PDF" key={`${answerKeyPdfUrl}-${Math.round(answerKeyZoom * 100)}`} />
             ) : (
-              <iframe className="pdf-frame" src={getPdfViewerSrc(answerKeyPdfUrl, answerKeyZoom)} title="Answer Key PDF Preview" key={`${answerKeyPdfUrl}-${Math.round(answerKeyZoom * 100)}`} />
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#94A3B8', fontSize: '0.8125rem', textAlign: 'center', padding: '2rem' }}>
+                No Answer Key document attached to this submission.
+              </div>
             )}
           </div>
         </div>
@@ -366,19 +376,25 @@ export default function ReviewSubmission() {
               <button className="zoom-btn" title="Reset Zoom" onClick={() => adjustZoom(setStudentZoom, 'reset')}>
                 <RefreshCw size={14} />
               </button>
-              <button className="zoom-btn" title="Popout PDF" onClick={() => window.open(studentPaperPdfUrl, '_blank')}>
+              <button className="zoom-btn" title="Popout PDF" onClick={() => studentPaperPdfUrl && window.open(studentPaperPdfUrl, '_blank')} disabled={!studentPaperPdfUrl}>
                 <Maximize2 size={14} />
               </button>
             </div>
           </div>
 
           <div className="pdf-viewer-wrapper">
-            <iframe 
-              className="pdf-frame" 
-              src={getPdfViewerSrc(studentPaperPdfUrl, studentZoom)} 
-              title="Student Answer Sheet PDF" 
-              key={`${studentPaperPdfUrl}-${Math.round(studentZoom * 100)}`}
-            />
+            {studentPaperPdfUrl ? (
+              <iframe 
+                className="pdf-frame" 
+                src={getPdfViewerSrc(studentPaperPdfUrl, studentZoom)} 
+                title="Student Answer Sheet PDF" 
+                key={`${studentPaperPdfUrl}-${Math.round(studentZoom * 100)}`}
+              />
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#94A3B8', fontSize: '0.8125rem', textAlign: 'center', padding: '2rem' }}>
+                No Student Answer Sheet document attached to this submission.
+              </div>
+            )}
           </div>
         </div>
 

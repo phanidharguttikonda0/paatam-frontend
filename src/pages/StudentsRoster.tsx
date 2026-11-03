@@ -40,7 +40,7 @@ interface ClassItem {
   id: string;
   name: string;
   section?: string;
-  sections?: { id: string; section_name: string }[];
+  sections?: { id: string; section_name: string; strength?: number }[];
 }
 
 interface SectionOption {
@@ -62,11 +62,18 @@ interface StudentSubmission {
   created_at?: string;
 }
 
+const cleanSecName = (raw: string) => {
+  if (!raw) return 'A';
+  return String(raw).replace(/^Section\s+/i, '').trim() || 'A';
+};
+
 export default function StudentsRoster() {
   const [searchParams] = useSearchParams();
   const initialSectionId = searchParams.get('sectionId') || '';
 
-  const { currentBranchId, branches } = useAuth();
+  const { currentBranchId, branches, role, currentUser } = useAuth();
+  const isBranchAdmin = ['ADMIN', 'BRANCH_ADMIN', 'DEAN', 'PRINCIPAL', 'VICE_PRINCIPAL'].includes(role?.toUpperCase());
+  const isTeacher = role?.toUpperCase() === 'TEACHER';
   const branchId = currentBranchId || (branches.length > 0 ? branches[0].id : '');
 
   const [students, setStudents] = useState<Student[]>([]);
@@ -101,46 +108,282 @@ export default function StudentsRoster() {
   const [formParentName, setFormParentName] = useState('');
   const [formParentPhone, setFormParentPhone] = useState('');
   const [formPassword, setFormPassword] = useState('StudentPassword123!');
+  const [formClassId, setFormClassId] = useState('');
   const [formSectionId, setFormSectionId] = useState('');
+  const [modalSections, setModalSections] = useState<SectionOption[]>([]);
+  const [isLoadingModalSections, setIsLoadingModalSections] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Bulk CSV
   const [csvContent, setCsvContent] = useState('');
   const [bulkStatus, setBulkStatus] = useState<string | null>(null);
+  const [bulkClassId, setBulkClassId] = useState('');
   const [bulkSectionId, setBulkSectionId] = useState('');
+  const [bulkModalSections, setBulkModalSections] = useState<SectionOption[]>([]);
+  const [isLoadingBulkSections, setIsLoadingBulkSections] = useState(false);
 
-  // 1. Fetch Classes
-  const fetchClasses = async () => {
+  // 1. Fetch Classes (robust across /api/classes, academic years, teacher dashboard & cache)
+  const fetchClasses = async (): Promise<ClassItem[]> => {
+    let loadedClasses: ClassItem[] = [];
+
+    // Strategy A: Global /api/classes (supports data.data, data.classes, data.items, or direct array)
     try {
       const res = await fetch(`${API_BASE_URL}/api/classes`);
-      const data = await res.json();
-      if (data.success && Array.isArray(data.classes)) {
-        setClasses(data.classes);
-      } else if (Array.isArray(data)) {
-        setClasses(data);
+      if (res.ok) {
+        const data = await res.json();
+        const list = Array.isArray(data.data)
+          ? data.data
+          : Array.isArray(data.classes)
+          ? data.classes
+          : Array.isArray(data.items)
+          ? data.items
+          : Array.isArray(data)
+          ? data
+          : [];
+        if (list.length > 0) {
+          loadedClasses = list;
+        }
       }
     } catch {}
+
+    // Strategy B: Academic Years -> Classes (Classes tied to session)
+    if (loadedClasses.length === 0) {
+      try {
+        let ayList: any[] = [];
+        if (branchId) {
+          const ayRes = await fetch(`${API_BASE_URL}/api/branch/${branchId}/academic-years`);
+          if (ayRes.ok) {
+            const ayData = await ayRes.json();
+            ayList = Array.isArray(ayData.data)
+              ? ayData.data
+              : Array.isArray(ayData.academicYears)
+              ? ayData.academicYears
+              : [];
+          }
+        }
+        if (ayList.length === 0) {
+          const ayRes = await fetch(`${API_BASE_URL}/api/academic-years`);
+          if (ayRes.ok) {
+            const ayData = await ayRes.json();
+            ayList = Array.isArray(ayData.data)
+              ? ayData.data
+              : Array.isArray(ayData.academicYears)
+              ? ayData.academicYears
+              : Array.isArray(ayData)
+              ? ayData
+              : [];
+          }
+        }
+
+        const activeAy = ayList.find((ay: any) => ay.is_active) || ayList[0];
+        if (activeAy?.id) {
+          const cRes = await fetch(`${API_BASE_URL}/api/academic-years/${activeAy.id}/classes`);
+          if (cRes.ok) {
+            const cData = await cRes.json();
+            const list = Array.isArray(cData.data)
+              ? cData.data
+              : Array.isArray(cData.classes)
+              ? cData.classes
+              : Array.isArray(cData)
+              ? cData
+              : [];
+            if (list.length > 0) {
+              loadedClasses = list;
+            }
+          }
+        }
+      } catch {}
+    }
+
+    // Strategy C: Teacher Dashboard (if logged in as Teacher/Class Incharge)
+    if (loadedClasses.length === 0) {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/teacher/dashboard`);
+        if (res.ok) {
+          const data = await res.json();
+          let allocations = Array.isArray(data?.data?.teaching_allocations)
+            ? data.data.teaching_allocations
+            : (Array.isArray(data?.data?.assigned_sections) ? data.data.assigned_sections : []);
+          const classTeacherSecs = Array.isArray(data?.data?.class_teacher_sections)
+            ? data.data.class_teacher_sections
+            : [];
+
+          const classMap = new Map<string, ClassItem>();
+
+          const teacherId = String(currentUser?.id || (currentUser as any)?.teacher_id || (currentUser as any)?.staff_id || '');
+          const teacherName = (currentUser?.name || '').toLowerCase();
+          const explicitSectionIds = new Set<string>();
+          const explicitSectionNames = new Set<string>();
+
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && (key.startsWith('paatam_section_allocations_') || key.startsWith('paatam_section_allocations_name_'))) {
+              const sId = key.replace(/^paatam_section_allocations_(name_)?/, '');
+              try {
+                const raw = localStorage.getItem(key);
+                if (raw) {
+                  const list = JSON.parse(raw);
+                  if (Array.isArray(list)) {
+                    for (const alloc of list) {
+                      const matchesTeacher =
+                        String(alloc.teacher_id) === teacherId ||
+                        String(alloc.teacher?.id) === teacherId ||
+                        String(alloc.teacher?.teacher_id) === teacherId ||
+                        (teacherId && (String(alloc.teacher_id).includes(teacherId) || teacherId.includes(String(alloc.teacher_id)))) ||
+                        (teacherName && alloc.teacher?.name && alloc.teacher.name.toLowerCase().includes(teacherName)) ||
+                        (teacherName && alloc.teacher_name && alloc.teacher_name.toLowerCase().includes(teacherName));
+
+                      if (matchesTeacher) {
+                        explicitSectionIds.add(String(sId));
+                        if (alloc.section_name) {
+                          explicitSectionNames.add(cleanSecName(alloc.section_name));
+                        }
+                      }
+                    }
+                  }
+                }
+              } catch {}
+            }
+          }
+
+          if (explicitSectionIds.size > 0 || explicitSectionNames.size > 0) {
+            allocations = allocations.filter((a: any) =>
+              explicitSectionIds.has(String(a.section_id)) ||
+              explicitSectionNames.has(cleanSecName(a.section_name)) ||
+              classTeacherSecs.some((ct: any) =>
+                String(ct.section_id) === String(a.section_id) ||
+                cleanSecName(ct.section_name) === cleanSecName(a.section_name)
+              )
+            );
+          }
+
+          for (const alloc of allocations) {
+            const cId = String(alloc.class_id || alloc.class_name || 'cls_1');
+            if (!classMap.has(cId)) {
+              classMap.set(cId, {
+                id: cId,
+                name: alloc.class_name || 'Grade 10',
+                sections: []
+              });
+            }
+            const entry = classMap.get(cId)!;
+            if (!entry.sections) entry.sections = [];
+            if (!entry.sections.some((s) => String(s.id) === String(alloc.section_id))) {
+              entry.sections.push({
+                id: String(alloc.section_id),
+                section_name: cleanSecName(alloc.section_name),
+                strength: alloc.students_count || 0
+              });
+            }
+          }
+
+          for (const ct of classTeacherSecs) {
+            const cName = ct.class_name || 'Grade 10';
+            let entry = Array.from(classMap.values()).find((c) => c.name === cName);
+            if (!entry) {
+              const cId = `cls_${ct.section_id}`;
+              entry = {
+                id: cId,
+                name: cName,
+                sections: [
+                  {
+                    id: String(ct.section_id),
+                    section_name: ct.section_name || 'A',
+                    strength: ct.students_count || 0
+                  }
+                ]
+              };
+              classMap.set(cId, entry);
+            } else {
+              if (!entry.sections) entry.sections = [];
+              if (!entry.sections.some((s) => String(s.id) === String(ct.section_id))) {
+                entry.sections.push({
+                  id: String(ct.section_id),
+                  section_name: ct.section_name || 'A',
+                  strength: ct.students_count || 0
+                });
+              }
+            }
+          }
+
+          loadedClasses = Array.from(classMap.values());
+        }
+      } catch {}
+    }
+
+    // Strategy D: Cached school classes in localStorage
+    if (loadedClasses.length === 0) {
+      try {
+        const cached = localStorage.getItem('paatam_school_classes');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            loadedClasses = parsed;
+          }
+        }
+      } catch {}
+    }
+
+    if (loadedClasses.length > 0) {
+      setClasses(loadedClasses);
+    }
+    return loadedClasses;
+  };
+
+  // Helper to fetch sections for a given class ID
+  const getSectionsForClass = async (cId: string, currentClassesList?: ClassItem[]): Promise<SectionOption[]> => {
+    if (!cId || cId === 'ALL') return [];
+
+    // For Teachers: strictly respect assigned sections in memory rather than all class sections
+    if (isTeacher) {
+      const sourceClasses = currentClassesList && currentClassesList.length > 0 ? currentClassesList : classes;
+      const foundClass = sourceClasses.find((c) => String(c.id) === String(cId) || c.name === cId);
+      if (foundClass?.sections && Array.isArray(foundClass.sections) && foundClass.sections.length > 0) {
+        return foundClass.sections;
+      }
+    }
+
+    // 1. Check API: GET /api/classes/:classId/sections (handles data.data, data.sections, array)
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/classes/${cId}/sections`);
+      if (res.ok) {
+        const data = await res.json();
+        const list = Array.isArray(data.data)
+          ? data.data
+          : Array.isArray(data.sections)
+          ? data.sections
+          : Array.isArray(data)
+          ? data
+          : [];
+        if (list.length > 0) {
+          return list;
+        }
+      }
+    } catch {}
+
+    // 2. Check if class object in memory already has sections
+    const sourceClasses = currentClassesList && currentClassesList.length > 0 ? currentClassesList : classes;
+    const foundClass = sourceClasses.find((c) => String(c.id) === String(cId));
+    if (foundClass?.sections && Array.isArray(foundClass.sections) && foundClass.sections.length > 0) {
+      return foundClass.sections;
+    }
+
+    // 3. Fallback from localStorage or section allocation keys
+    try {
+      const cached = localStorage.getItem(`paatam_sections_${cId}`);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+
+    return [];
   };
 
   // 2. Fetch Sections when Class changes
   const fetchSectionsForClass = async (cId: string) => {
-    if (!cId || cId === 'ALL') {
-      setAvailableSections([]);
-      return;
-    }
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/classes/${cId}/sections`);
-      const data = await res.json();
-      if (data.success && Array.isArray(data.sections)) {
-        setAvailableSections(data.sections);
-      } else if (Array.isArray(data)) {
-        setAvailableSections(data);
-      } else {
-        setAvailableSections([]);
-      }
-    } catch {
-      setAvailableSections([]);
-    }
+    const secs = await getSectionsForClass(cId);
+    setAvailableSections(secs);
   };
 
   // 3. Fetch Students based on Section or Branch
@@ -151,45 +394,134 @@ export default function StudentsRoster() {
       // Documented API: GET /api/sections/:sectionId/students
       try {
         const res = await fetch(`${API_BASE_URL}/api/sections/${selectedSectionId}/students`);
-        const data = await res.json();
-        const list = data.students || (Array.isArray(data) ? data : []);
-        setStudents(list);
-        setIsLoading(false);
-        return;
+        if (res.ok) {
+          const data = await res.json();
+          const list = data.students || (Array.isArray(data) ? data : []);
+          setStudents(list);
+          setIsLoading(false);
+          return;
+        }
       } catch {}
     }
 
-    // Fallback: Global search or legacy /api/students
-    try {
-      const url = branchId
-        ? `${API_BASE_URL}/api/branch/${branchId}/students/search?q=`
-        : `${API_BASE_URL}/api/students`;
+    // If a class is selected, fetch students from its sections
+    if (selectedClassId && selectedClassId !== 'ALL' && availableSections.length > 0) {
+      try {
+        const allSecStudents: Student[] = [];
+        for (const sec of availableSections) {
+          const sRes = await fetch(`${API_BASE_URL}/api/sections/${sec.id}/students`);
+          if (sRes.ok) {
+            const sData = await sRes.json();
+            const list = sData.students || (Array.isArray(sData) ? sData : []);
+            allSecStudents.push(...list);
+          }
+        }
+        setStudents(allSecStudents);
+      } catch {}
+    } else {
+      setStudents([]);
+    }
 
-      const res = await fetch(url);
-      const data = await res.json();
-      if (data.success && Array.isArray(data.students)) {
-        setStudents(data.students);
-      } else if (Array.isArray(data)) {
-        setStudents(data);
+    setIsLoading(false);
+  };
+
+  const handleOpenAddModal = async () => {
+    setEditingStudent(null);
+    resetForm();
+
+    let currentClasses = classes;
+    if (currentClasses.length === 0) {
+      currentClasses = await fetchClasses();
+    }
+
+    const targetClass = selectedClassId !== 'ALL' ? selectedClassId : (currentClasses[0]?.id || '');
+    setFormClassId(targetClass);
+
+    if (targetClass) {
+      setIsLoadingModalSections(true);
+      const secs = await getSectionsForClass(targetClass, currentClasses);
+      setModalSections(secs);
+      setIsLoadingModalSections(false);
+      if (selectedSectionId && selectedSectionId !== 'ALL' && secs.some((s) => s.id === selectedSectionId)) {
+        setFormSectionId(selectedSectionId);
+      } else if (secs.length > 0) {
+        setFormSectionId(secs[0].id);
       } else {
-        // Final fallback
-        const fbRes = await fetch(`${API_BASE_URL}/api/students`);
-        const fbData = await fbRes.json();
-        setStudents(fbData.students || (Array.isArray(fbData) ? fbData : []));
+        setFormSectionId('');
       }
-    } catch {
-      fetch(`${API_BASE_URL}/api/students`)
-        .then((r) => r.json())
-        .then((d) => setStudents(d.students || []))
-        .catch(() => {});
-    } finally {
-      setIsLoading(false);
+    } else {
+      setModalSections([]);
+      setFormSectionId('');
+    }
+
+    setIsAddModalOpen(true);
+  };
+
+  const handleFormClassChange = async (cId: string) => {
+    setFormClassId(cId);
+    setFormSectionId('');
+    if (cId) {
+      setIsLoadingModalSections(true);
+      const secs = await getSectionsForClass(cId);
+      setModalSections(secs);
+      setIsLoadingModalSections(false);
+      if (secs.length > 0) {
+        setFormSectionId(secs[0].id);
+      }
+    } else {
+      setModalSections([]);
+    }
+  };
+
+  const handleOpenBulkModal = async () => {
+    setBulkStatus(null);
+    let currentClasses = classes;
+    if (currentClasses.length === 0) {
+      currentClasses = await fetchClasses();
+    }
+
+    const targetClass = selectedClassId !== 'ALL' ? selectedClassId : (currentClasses[0]?.id || '');
+    setBulkClassId(targetClass);
+
+    if (targetClass) {
+      setIsLoadingBulkSections(true);
+      const secs = await getSectionsForClass(targetClass, currentClasses);
+      setBulkModalSections(secs);
+      setIsLoadingBulkSections(false);
+      if (selectedSectionId && selectedSectionId !== 'ALL' && secs.some((s) => s.id === selectedSectionId)) {
+        setBulkSectionId(selectedSectionId);
+      } else if (secs.length > 0) {
+        setBulkSectionId(secs[0].id);
+      } else {
+        setBulkSectionId('');
+      }
+    } else {
+      setBulkModalSections([]);
+      setBulkSectionId('');
+    }
+
+    setIsBulkModalOpen(true);
+  };
+
+  const handleBulkClassChange = async (cId: string) => {
+    setBulkClassId(cId);
+    setBulkSectionId('');
+    if (cId) {
+      setIsLoadingBulkSections(true);
+      const secs = await getSectionsForClass(cId);
+      setBulkModalSections(secs);
+      setIsLoadingBulkSections(false);
+      if (secs.length > 0) {
+        setBulkSectionId(secs[0].id);
+      }
+    } else {
+      setBulkModalSections([]);
     }
   };
 
   useEffect(() => {
     fetchClasses();
-  }, []);
+  }, [branchId]);
 
   useEffect(() => {
     if (initialSectionId) {
@@ -267,40 +599,25 @@ export default function StudentsRoster() {
             parent_contact: formParentPhone.trim() || undefined
           })
         });
-        const data = await res.json();
+        let data: any = {};
+        try {
+          data = await res.json();
+        } catch {
+          data = {};
+        }
         if (res.ok && (data.success || data.message)) {
           setIsAddModalOpen(false);
           setEditingStudent(null);
           resetForm();
           fetchStudents();
         } else {
-          alert(data.message || 'Error updating student.');
+          alert(data.message || data.error || 'Error updating student.');
         }
       } else {
         // Enrollment requires a target section
-        const targetSection = formSectionId || selectedSectionId;
-        if (!targetSection || targetSection === 'ALL') {
-          // Fallback legacy endpoint
-          const res = await fetch(`${API_BASE_URL}/api/students`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              name: formName.trim(),
-              rollNumber: formRoll.trim(),
-              admissionNo: formAdm.trim(),
-              classId: selectedClassId !== 'ALL' ? selectedClassId : null,
-              parentName: formParentName.trim(),
-              parentPhone: formParentPhone.trim()
-            })
-          });
-          const data = await res.json();
-          if (data.success) {
-            setIsAddModalOpen(false);
-            resetForm();
-            fetchStudents();
-            return;
-          }
-          alert(data.message || 'Please select a specific section to enroll this student.');
+        const targetSection = formSectionId || (selectedSectionId !== 'ALL' ? selectedSectionId : '');
+        if (!targetSection) {
+          alert('Please select both a Class and a Section to enroll this student.');
           setIsSubmitting(false);
           return;
         }
@@ -320,17 +637,22 @@ export default function StudentsRoster() {
             password: formPassword.trim() || 'StudentPassword123!'
           })
         });
-        const data = await res.json();
+        let data: any = {};
+        try {
+          data = await res.json();
+        } catch {
+          data = {};
+        }
         if (res.ok && (data.success || data.student || data.id)) {
           setIsAddModalOpen(false);
           resetForm();
           fetchStudents();
         } else {
-          alert(data.message || 'Unable to enroll student.');
+          alert(data.message || data.error || `Unable to enroll student (HTTP ${res.status}).`);
         }
       }
-    } catch {
-      alert('Error connecting to server.');
+    } catch (err: any) {
+      alert(err?.message || 'Error connecting to server.');
     } finally {
       setIsSubmitting(false);
     }
@@ -425,7 +747,12 @@ export default function StudentsRoster() {
     setIsSubmitting(true);
     setBulkStatus(null);
 
-    const targetSection = bulkSectionId || selectedSectionId;
+    const targetSection = bulkSectionId || (selectedSectionId !== 'ALL' ? selectedSectionId : '');
+    if (!targetSection) {
+      setBulkStatus('❌ Please select a Target Class and Section first.');
+      setIsSubmitting(false);
+      return;
+    }
 
     // Parse CSV lines to structured objects
     const lines = csvContent.trim().split(/\r?\n/).filter(Boolean);
@@ -448,35 +775,20 @@ export default function StudentsRoster() {
     }
 
     try {
-      if (targetSection && targetSection !== 'ALL') {
-        // Documented API: POST /api/sections/:sectionId/students/bulk
-        const res = await fetch(`${API_BASE_URL}/api/sections/${targetSection}/students/bulk`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ students: studentObjects })
-        });
-        const data = await res.json();
-        if (res.ok && (data.success || data.count || data.created)) {
-          setBulkStatus(`✅ Successfully enrolled ${studentObjects.length} student(s) into Section!`);
-          fetchStudents();
-          setTimeout(() => {
-            setIsBulkModalOpen(false);
-            setCsvContent('');
-            setBulkStatus(null);
-          }, 1800);
-          return;
-        }
-      }
-
-      // Legacy fallback
-      const fbRes = await fetch(`${API_BASE_URL}/api/students/bulk`, {
+      // Documented API: POST /api/sections/:sectionId/students/bulk
+      const res = await fetch(`${API_BASE_URL}/api/sections/${targetSection}/students/bulk`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv: csvContent })
+        body: JSON.stringify({ students: studentObjects })
       });
-      const fbData = await fbRes.json();
-      if (fbData.success) {
-        setBulkStatus(`✅ Successfully enrolled ${fbData.successful || studentObjects.length} student(s)!`);
+      let data: any = {};
+      try {
+        data = await res.json();
+      } catch {
+        data = {};
+      }
+      if (res.ok && (data.success || data.count || data.created)) {
+        setBulkStatus(`✅ Successfully enrolled ${studentObjects.length} student(s) into Section!`);
         fetchStudents();
         setTimeout(() => {
           setIsBulkModalOpen(false);
@@ -484,10 +796,10 @@ export default function StudentsRoster() {
           setBulkStatus(null);
         }, 1800);
       } else {
-        setBulkStatus(`❌ Error: ${fbData.message || 'Unable to parse batch.'}`);
+        setBulkStatus(`❌ Error: ${data.message || data.error || `Failed (HTTP ${res.status})`}`);
       }
-    } catch {
-      setBulkStatus('❌ Server communication error.');
+    } catch (err: any) {
+      setBulkStatus(`❌ ${err?.message || 'Server communication error.'}`);
     } finally {
       setIsSubmitting(false);
     }
@@ -591,10 +903,7 @@ export default function StudentsRoster() {
             <div style={{ display: 'flex', gap: '0.5rem' }}>
               <button
                 className="btn btn-secondary"
-                onClick={() => {
-                  setBulkSectionId(selectedSectionId !== 'ALL' ? selectedSectionId : '');
-                  setIsBulkModalOpen(true);
-                }}
+                onClick={handleOpenBulkModal}
                 style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
               >
                 <Upload className="size-4" />
@@ -602,12 +911,7 @@ export default function StudentsRoster() {
               </button>
               <button
                 className="btn btn-primary"
-                onClick={() => {
-                  setEditingStudent(null);
-                  resetForm();
-                  setFormSectionId(selectedSectionId !== 'ALL' ? selectedSectionId : '');
-                  setIsAddModalOpen(true);
-                }}
+                onClick={handleOpenAddModal}
                 style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
               >
                 <Plus className="size-4" />
@@ -738,15 +1042,17 @@ export default function StudentsRoster() {
                             >
                               <Edit2 className="size-3.5 text-slate-600" />
                             </button>
-                            <button
-                              type="button"
-                              className="btn btn-secondary btn-sm"
-                              onClick={() => handleDeleteStudent(student.id, student.name)}
-                              title="Delete Student"
-                              style={{ padding: '0.3rem 0.5rem', color: '#EF4444' }}
-                            >
-                              <Trash2 className="size-3.5" />
-                            </button>
+                            {isBranchAdmin && (
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => handleDeleteStudent(student.id, student.name)}
+                                title="Delete Student (DELETE /api/students/:studentId)"
+                                style={{ padding: '0.3rem 0.5rem', color: '#EF4444' }}
+                              >
+                                <Trash2 className="size-3.5" />
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -798,7 +1104,7 @@ export default function StudentsRoster() {
                   required
                   type="text"
                   className="form-input"
-                  placeholder="e.g. Aarav Sharma"
+                  placeholder="e.g. Student Full Name"
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
                 />
@@ -862,25 +1168,58 @@ export default function StudentsRoster() {
                 </div>
               </div>
 
-              {/* Section Target */}
-              {!editingStudent && availableSections.length > 0 && (
-                <div>
-                  <label style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#334155', display: 'block', marginBottom: '0.25rem' }}>
-                    Target Section *
-                  </label>
-                  <select
-                    required
-                    className="form-input"
-                    value={formSectionId}
-                    onChange={(e) => setFormSectionId(e.target.value)}
-                  >
-                    <option value="">-- Choose Section --</option>
-                    {availableSections.map((sec) => (
-                      <option key={sec.id} value={sec.id}>
-                        Section {sec.section_name}
+              {/* Class & Section Selection */}
+              {!editingStudent && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                  <div>
+                    <label style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#334155', display: 'block', marginBottom: '0.25rem' }}>
+                      Class / Cohort *
+                    </label>
+                    <select
+                      required
+                      className="form-input"
+                      value={formClassId}
+                      onChange={(e) => handleFormClassChange(e.target.value)}
+                    >
+                      <option value="">-- Choose Class --</option>
+                      {classes.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#334155', display: 'block', marginBottom: '0.25rem' }}>
+                      Section *
+                    </label>
+                    <select
+                      required
+                      disabled={!formClassId || isLoadingModalSections}
+                      className="form-input"
+                      value={formSectionId}
+                      onChange={(e) => setFormSectionId(e.target.value)}
+                    >
+                      <option value="">
+                        {isLoadingModalSections
+                          ? 'Loading sections...'
+                          : modalSections.length === 0
+                          ? 'No sections available'
+                          : '-- Choose Section --'}
                       </option>
-                    ))}
-                  </select>
+                      {modalSections.map((sec) => (
+                        <option key={sec.id} value={sec.id}>
+                          Section {sec.section_name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {!editingStudent && formClassId && !isLoadingModalSections && modalSections.length === 0 && (
+                <div style={{ fontSize: '0.75rem', color: '#DC2626', background: '#FEF2F2', padding: '0.5rem 0.75rem', borderRadius: '4px' }}>
+                  ⚠️ This class has no sections yet. Please create a section (e.g. Section A) in <strong>Classes</strong> first.
                 </div>
               )}
 
@@ -1141,23 +1480,53 @@ export default function StudentsRoster() {
             </div>
 
             <div style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              {availableSections.length > 0 && (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
                 <div>
                   <label style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#334155', display: 'block', marginBottom: '0.25rem' }}>
-                    Enroll into Section
+                    Target Class *
                   </label>
                   <select
                     className="form-input"
+                    value={bulkClassId}
+                    onChange={(e) => handleBulkClassChange(e.target.value)}
+                  >
+                    <option value="">-- Choose Class --</option>
+                    {classes.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#334155', display: 'block', marginBottom: '0.25rem' }}>
+                    Target Section *
+                  </label>
+                  <select
+                    className="form-input"
+                    disabled={!bulkClassId || isLoadingBulkSections}
                     value={bulkSectionId}
                     onChange={(e) => setBulkSectionId(e.target.value)}
                   >
-                    <option value="">-- Choose Target Section --</option>
-                    {availableSections.map((sec) => (
+                    <option value="">
+                      {isLoadingBulkSections
+                        ? 'Loading sections...'
+                        : bulkModalSections.length === 0
+                        ? 'No sections available'
+                        : '-- Choose Section --'}
+                    </option>
+                    {bulkModalSections.map((sec) => (
                       <option key={sec.id} value={sec.id}>
                         Section {sec.section_name}
                       </option>
                     ))}
                   </select>
+                </div>
+              </div>
+
+              {bulkClassId && !isLoadingBulkSections && bulkModalSections.length === 0 && (
+                <div style={{ fontSize: '0.75rem', color: '#DC2626', background: '#FEF2F2', padding: '0.5rem 0.75rem', borderRadius: '4px' }}>
+                  ⚠️ This class has no sections yet. Please create a section in <strong>Classes</strong> first.
                 </div>
               )}
 

@@ -1,14 +1,16 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { API_BASE_URL, setAuthToken, clearAuthToken } from '../config/api';
+import { API_BASE_URL, getAuthToken, setAuthToken, setRefreshToken, clearAuthToken } from '../config/api';
 
 export type UserRole =
   | 'CORPORATE_ADMIN'
+  | 'SUPER_ADMIN'
   | 'BRANCH_ADMIN'
   | 'DEAN'
   | 'PRINCIPAL'
   | 'VICE_PRINCIPAL'
   | 'TEACHER'
   | 'STUDENT'
+  | 'PARENT'
   | 'ADMIN'
   | 'GUEST';
 
@@ -19,6 +21,7 @@ export interface UserProfile {
   role: UserRole;
   title: string;
   admission_no?: string;
+  teacher_id?: string;
   branchId?: string;
   branchName?: string;
   classId?: string;
@@ -48,65 +51,56 @@ interface AuthContextType {
   isRole: (roles: UserRole[]) => boolean;
   logout: () => void;
   // Documented Role-Based Auth Actions
-  loginCorporateInitiate: (identifier: string) => Promise<{ success: boolean; message?: string }>;
-  loginCorporateVerify: (identifier: string, otp: string) => Promise<{ success: boolean; message?: string }>;
+  loginCorporateInitiate: (identifier: string, corporateId?: string) => Promise<{ success: boolean; otp?: string; resolvedCorporateId?: string; message?: string }>;
+  loginCorporateVerify: (identifier: string, otp: string, corporateId?: string) => Promise<{ success: boolean; message?: string }>;
   loginAdmin: (identifier: string, password: string) => Promise<{ success: boolean; message?: string }>;
   loginTeacher: (identifier: string, password: string) => Promise<{ success: boolean; message?: string }>;
   loginStudent: (admission_no: string, password: string) => Promise<{ success: boolean; message?: string }>;
   forgotPassword: (role: 'admin' | 'teacher' | 'student', identifier: string, corporateId?: string) => Promise<{ success: boolean; message?: string }>;
   resetPassword: (role: 'admin' | 'teacher' | 'student', payload: any) => Promise<{ success: boolean; message?: string }>;
+  createCorporate: (name: string, registration_no: string, verificationToken?: string, admin?: { name: string; email: string; mobile: string }) => Promise<{ success: boolean; data?: any; message?: string }>;
+  sendOtp: (email: string, mobile: string) => Promise<{ success: boolean; otp?: string; message?: string }>;
+  verifyOtp: (email: string, mobile: string, otp: string) => Promise<{ success: boolean; verificationToken?: string; message?: string }>;
+  lookupCorporate: (registrationNo: string) => Promise<{ success: boolean; corporate?: any; message?: string }>;
+  fetchLiveProfile: () => Promise<void>;
   refreshBranches: () => Promise<void>;
 }
 
-// Pre-configured Personas for instant demo switching
 export const DEMO_PROFILES: Record<string, UserProfile> = {
   CORPORATE_ADMIN: {
-    id: 'corp-admin-01',
-    name: 'Sunita Sharma',
-    email: 'corp.admin@paatam.edu',
+    id: '',
+    name: 'Corporate Admin',
+    email: '',
     role: 'CORPORATE_ADMIN',
-    title: 'Corporate Super Admin',
-    branchId: '301',
-    branchName: 'Madhapur Campus'
+    title: 'Corporate Super Admin'
   },
   BRANCH_ADMIN: {
-    id: 'admin-dean-1',
-    name: 'Dr. Ramesh Sundaram',
-    email: 'dean.ramesh@paatam.edu',
+    id: '',
+    name: 'Branch Admin',
+    email: '',
     role: 'BRANCH_ADMIN',
-    title: 'Dean & Principal (Executive Admin)',
-    branchId: '301',
-    branchName: 'Madhapur Campus'
+    title: 'Branch Administrator'
   },
   ADMIN: {
-    id: 'admin-dean-1',
-    name: 'Dr. Ramesh Sundaram',
-    email: 'dean.ramesh@paatam.edu',
+    id: '',
+    name: 'Branch Admin',
+    email: '',
     role: 'BRANCH_ADMIN',
-    title: 'Dean & Principal (Executive Admin)',
-    branchId: '301',
-    branchName: 'Madhapur Campus'
+    title: 'Branch Administrator'
   },
   TEACHER: {
-    id: 'teacher-101',
-    name: 'Suresh Raina',
-    email: 'raina@school.edu',
+    id: '',
+    name: 'Faculty Teacher',
+    email: '',
     role: 'TEACHER',
-    title: 'Faculty / Subject Teacher',
-    branchId: '301',
-    branchName: 'Madhapur Campus'
+    title: 'Faculty / Subject Teacher'
   },
   STUDENT: {
-    id: 'student-204',
-    name: 'Aarav Sharma',
-    email: 'aarav@school.edu',
-    admission_no: 'ADM-2026-001',
+    id: '',
+    name: 'Student',
+    email: '',
     role: 'STUDENT',
-    title: 'Grade 10 - Section A (Roll: 101)',
-    branchId: '301',
-    branchName: 'Madhapur Campus',
-    className: 'Grade 10',
-    sectionName: 'A'
+    title: 'Student'
   }
 };
 
@@ -125,43 +119,92 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return null;
   });
 
-  const [branches, setBranches] = useState<Branch[]>([
-    { id: '301', name: 'Madhapur Campus', address: 'Hitech City, Hyderabad' },
-    { id: '302', name: 'Jubilee Hills Campus', address: 'Road No 36, Hyderabad' }
-  ]);
+  const [branches, setBranches] = useState<Branch[]>([]);
   const [currentBranchId, setCurrentBranchId] = useState<string>(() => {
-    return localStorage.getItem('paatam_branch_id') || '301';
+    return localStorage.getItem('paatam_branch_id') || '';
   });
 
-  // Fetch branches according to user role using documented endpoints
+  // Fetch branches according to user role strictly using documented endpoints
   const fetchBranches = async () => {
     if (!currentUser) return;
-    const endpoints = currentUser.role === 'CORPORATE_ADMIN'
-      ? [`${API_BASE_URL}/api/branch/corporate`, `${API_BASE_URL}/api/branches`]
+    if (['TEACHER', 'STUDENT', 'PARENT', 'GUEST'].includes(currentUser.role)) {
+      return;
+    }
+    const endpoints = currentUser.role === 'CORPORATE_ADMIN' || currentUser.role === 'SUPER_ADMIN'
+      ? [`${API_BASE_URL}/api/branch/corporate/all`, `${API_BASE_URL}/api/branch/corporate`, `${API_BASE_URL}/api/branches`]
       : [`${API_BASE_URL}/api/branch-admin/my-branches`, `${API_BASE_URL}/api/branches`];
 
+    let found = false;
     for (const url of endpoints) {
       try {
         const res = await fetch(url);
         if (!res.ok) continue;
         const data = await res.json();
         const branchList = Array.isArray(data.data) ? data.data : Array.isArray(data.branches) ? data.branches : null;
-        if (branchList && branchList.length > 0) {
+        if (branchList && Array.isArray(branchList)) {
           setBranches(branchList);
-          if (!branchList.some((b: Branch) => b.id === currentBranchId)) {
+          if (branchList.length > 0 && (!currentBranchId || !branchList.some((b: Branch) => b.id === currentBranchId))) {
             setCurrentBranchId(branchList[0].id);
+            localStorage.setItem('paatam_branch_id', branchList[0].id);
           }
+          found = true;
           break;
         }
       } catch (e) {
-        // try fallback endpoint
+        // try next endpoint
       }
+    }
+    if (!found) {
+      setBranches([]);
+    }
+  };
+
+  // Fetch live role-specific profile using documented GET /api/branch-admin/profile, /api/teacher/profile, /api/student/profile
+  const fetchLiveProfile = async () => {
+    if (!currentUser) return;
+    try {
+      let endpoint = '';
+      if (['BRANCH_ADMIN', 'ADMIN', 'DEAN', 'PRINCIPAL', 'VICE_PRINCIPAL'].includes(currentUser.role)) {
+        endpoint = `${API_BASE_URL}/api/branch-admin/profile`;
+      } else if (currentUser.role === 'TEACHER') {
+        endpoint = `${API_BASE_URL}/api/teacher/profile`;
+      } else if (currentUser.role === 'STUDENT') {
+        endpoint = `${API_BASE_URL}/api/student/profile`;
+      }
+
+      if (!endpoint) return;
+
+      const res = await fetch(endpoint);
+      if (res.ok) {
+        const json = await res.json();
+        const p = json.data || json.user || json.profile;
+        if (p) {
+          setCurrentUser(prev => {
+            if (!prev) return prev;
+            const updated: UserProfile = {
+              ...prev,
+              id: p.id ? String(p.id) : prev.id,
+              name: p.name || p.admin_name || p.teacher_name || prev.name,
+              email: p.contact_email || p.email || prev.email,
+              admission_no: p.admission_no || prev.admission_no,
+              teacher_id: p.teacher_id || p.staff_id || (p as any).teacherId || prev.teacher_id,
+              className: p.class_name || prev.className,
+              sectionName: p.section_name || prev.sectionName
+            };
+            localStorage.setItem('paatam_user', JSON.stringify(updated));
+            return updated;
+          });
+        }
+      }
+    } catch {
+      // Keep existing profile if offline or mock
     }
   };
 
   useEffect(() => {
     if (currentUser) {
       fetchBranches();
+      fetchLiveProfile();
     }
   }, [currentUser?.role]);
 
@@ -171,10 +214,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.setItem('paatam_user', JSON.stringify(profile));
   };
 
-  const loginWithProfile = (profile: UserProfile, token?: string) => {
+  const loginWithProfile = (profile: UserProfile, token?: string, refreshToken?: string) => {
     setCurrentUser(profile);
     localStorage.setItem('paatam_user', JSON.stringify(profile));
     if (token) setAuthToken(token);
+    if (refreshToken) setRefreshToken(refreshToken);
   };
 
   const logout = () => {
@@ -185,7 +229,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const isRole = (roles: UserRole[]) => {
     if (!currentUser) return false;
-    return roles.includes(currentUser.role) || (roles.includes('ADMIN') && (currentUser.role === 'BRANCH_ADMIN' || currentUser.role === 'CORPORATE_ADMIN' || currentUser.role === 'DEAN' || currentUser.role === 'PRINCIPAL' || currentUser.role === 'VICE_PRINCIPAL'));
+    return (
+      roles.includes(currentUser.role) ||
+      (roles.includes('ADMIN') &&
+        ['BRANCH_ADMIN', 'CORPORATE_ADMIN', 'SUPER_ADMIN', 'DEAN', 'PRINCIPAL', 'VICE_PRINCIPAL', 'ADMIN'].includes(
+          currentUser.role
+        ))
+    );
   };
 
   const handleBranchChange = (branchId: string) => {
@@ -193,40 +243,90 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.setItem('paatam_branch_id', branchId);
   };
 
-  // 1. Corporate Admin Login Initiation
-  const loginCorporateInitiate = async (identifier: string) => {
+  // Helper to resolve string / registration number to numeric corporateId
+  const resolveNumericCorporateId = async (idOrReg?: string): Promise<string> => {
+    let raw = idOrReg?.trim() || localStorage.getItem('paatam_last_corporate_id') || '';
+    if (!raw) return '4004316239145986';
+    if (/^\d{6,}$/.test(raw)) return raw;
+
     try {
+      const lookupRes = await fetch(`${API_BASE_URL}/api/corporate/lookup/${encodeURIComponent(raw)}`);
+      if (lookupRes.ok) {
+        const lookupData = await lookupRes.json();
+        const foundId = lookupData.data?.corporateId || lookupData.corporateId || lookupData.data?.id;
+        if (foundId) {
+          localStorage.setItem('paatam_last_corporate_id', String(foundId));
+          return String(foundId);
+        }
+      }
+    } catch {}
+
+    return localStorage.getItem('paatam_last_corporate_id') || raw;
+  };
+
+  // 1. Corporate Admin Login Initiation
+  const loginCorporateInitiate = async (identifier: string, corporateId?: string) => {
+    try {
+      const activeCorpId = await resolveNumericCorporateId(corporateId);
+      const isEmail = identifier.includes('@');
+      const payload: any = {
+        corporateId: activeCorpId,
+        identifier: identifier.trim(),
+        email: isEmail ? identifier.trim() : undefined,
+        mobile: !isEmail ? identifier.trim() : undefined
+      };
+
       const res = await fetch(`${API_BASE_URL}/api/auth/corporate/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ identifier })
+        body: JSON.stringify(payload)
       });
-      const data = await res.json();
-      return { success: res.ok, message: data.message };
+      const data = await res.json().catch(() => ({}));
+      const otpCode = data.data?.otp || data.otp;
+      return {
+        success: res.ok,
+        otp: otpCode,
+        resolvedCorporateId: activeCorpId,
+        message: data.message || (otpCode ? `OTP generated: ${otpCode}` : (res.ok ? 'OTP sent to registered corporate contact' : 'Failed to send OTP'))
+      };
     } catch (err: any) {
       return { success: false, message: err.message || 'Connection error' };
     }
   };
 
   // 2. Corporate Admin OTP Verification
-  const loginCorporateVerify = async (identifier: string, otp: string) => {
+  const loginCorporateVerify = async (identifier: string, otp: string, corporateId?: string) => {
     try {
+      const activeCorpId = await resolveNumericCorporateId(corporateId);
+      const isEmail = identifier.includes('@');
+      const payload: any = {
+        corporateId: activeCorpId,
+        identifier: identifier.trim(),
+        email: isEmail ? identifier.trim() : undefined,
+        mobile: !isEmail ? identifier.trim() : undefined,
+        otp: otp.trim()
+      };
+
       const res = await fetch(`${API_BASE_URL}/api/auth/corporate/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ identifier, otp })
+        body: JSON.stringify(payload)
       });
       const data = await res.json();
-      if (res.ok && data.accessToken) {
-        setAuthToken(data.accessToken);
+      const token = data.data?.accessToken || data.accessToken || data.token;
+      if (res.ok && token) {
+        setAuthToken(token);
+        const rToken = data.data?.refreshToken || data.data?.refresh_token || data.refreshToken || data.refresh_token;
+        if (rToken) setRefreshToken(rToken);
+        const userData = data.data?.user || data.user || data.data?.admin || data.admin;
         const profile: UserProfile = {
-          id: data.user?.id || 'corp-admin-01',
-          name: data.user?.name || identifier.split('@')[0],
-          email: identifier,
+          id: userData?.id ? String(userData.id) : 'corp-admin-01',
+          name: userData?.name || userData?.admin_name || identifier.split('@')[0],
+          email: userData?.email || identifier,
           role: 'CORPORATE_ADMIN',
           title: 'Corporate Super Admin'
         };
-        loginWithProfile(profile, data.accessToken);
+        loginWithProfile(profile, token, data.data?.refreshToken || data.data?.refresh_token || data.refreshToken || data.refresh_token);
         return { success: true };
       }
       return { success: false, message: data.message || 'Invalid OTP' };
@@ -235,27 +335,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // 3. Branch Admin Password Login
+  // 3. Branch Admin Password Login: POST /api/auth/admin/login & /api/auth/branch-admin/login
   const loginAdmin = async (identifier: string, password: string) => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/auth/admin/login`, {
+      let res = await fetch(`${API_BASE_URL}/api/auth/admin/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ identifier, password })
       });
+      if (!res.ok && res.status === 404) {
+        res = await fetch(`${API_BASE_URL}/api/auth/branch-admin/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ identifier, password })
+        });
+      }
       const data = await res.json();
       if (res.ok) {
-        const token = data.accessToken || data.token;
+        const token = data.data?.accessToken || data.accessToken || data.token;
         if (token) setAuthToken(token);
-        const role = (data.user?.role || 'BRANCH_ADMIN') as UserRole;
+        const rToken = data.data?.refreshToken || data.data?.refresh_token || data.refreshToken || data.refresh_token;
+        if (rToken) setRefreshToken(rToken);
+        const userData = data.data?.user || data.user || data.data?.admin || data.admin;
+        const role = (userData?.role || 'BRANCH_ADMIN') as UserRole;
         const profile: UserProfile = {
-          id: data.user?.id || 'admin-01',
-          name: data.user?.name || data.user?.admin_name || identifier.split('@')[0],
-          email: identifier,
+          id: userData?.id ? String(userData.id) : 'admin-01',
+          name: userData?.name || userData?.admin_name || identifier.split('@')[0],
+          email: userData?.email || userData?.contact_email || identifier,
           role: role,
           title: `${role.replace(/_/g, ' ')} (Branch Admin)`
         };
-        loginWithProfile(profile, token);
+        loginWithProfile(profile, token, data.data?.refreshToken || data.data?.refresh_token || data.refreshToken || data.refresh_token);
         return { success: true };
       }
       return { success: false, message: data.message || 'Authentication failed' };
@@ -274,16 +384,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
       const data = await res.json();
       if (res.ok) {
-        const token = data.accessToken || data.token;
+        const token = data.data?.accessToken || data.accessToken || data.token;
         if (token) setAuthToken(token);
+        const rToken = data.data?.refreshToken || data.data?.refresh_token || data.refreshToken || data.refresh_token;
+        if (rToken) setRefreshToken(rToken);
+        const userData = data.data?.user || data.user || data.data?.teacher || data.teacher;
         const profile: UserProfile = {
-          id: data.user?.id || 'teacher-01',
-          name: data.user?.name || identifier.split('@')[0],
-          email: identifier,
+          id: userData?.id ? String(userData.id) : 'teacher-01',
+          name: userData?.name || userData?.teacher_name || identifier.split('@')[0],
+          email: userData?.email || userData?.contact_email || identifier,
           role: 'TEACHER',
           title: 'Faculty / Subject Teacher'
         };
-        loginWithProfile(profile, token);
+        loginWithProfile(profile, token, data.data?.refreshToken || data.data?.refresh_token || data.refreshToken || data.refresh_token);
         return { success: true };
       }
       return { success: false, message: data.message || 'Invalid credentials' };
@@ -302,17 +415,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
       const data = await res.json();
       if (res.ok) {
-        const token = data.accessToken || data.token;
+        const token = data.data?.accessToken || data.accessToken || data.token;
         if (token) setAuthToken(token);
+        const rToken = data.data?.refreshToken || data.data?.refresh_token || data.refreshToken || data.refresh_token;
+        if (rToken) setRefreshToken(rToken);
+        const userData = data.data?.user || data.user || data.data?.student || data.student;
         const profile: UserProfile = {
-          id: data.user?.id || 'student-01',
-          name: data.user?.name || admission_no,
-          email: data.user?.email || `${admission_no.toLowerCase()}@student.paatam.edu`,
+          id: userData?.id ? String(userData.id) : 'student-01',
+          name: userData?.name || admission_no,
+          email: userData?.email || `${admission_no.toLowerCase()}@student.paatam.edu`,
           admission_no: admission_no,
           role: 'STUDENT',
           title: `Student (${admission_no})`
         };
-        loginWithProfile(profile, token);
+        loginWithProfile(profile, token, data.data?.refreshToken || data.data?.refresh_token || data.refreshToken || data.refresh_token);
         return { success: true };
       }
       return { success: false, message: data.message || 'Invalid Admission Number or password' };
@@ -321,16 +437,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Forgot password OTP request
+  // Forgot password OTP request: POST /api/auth/:role/forgot-password
+  // Explicitly references:
+  // POST /api/auth/admin/forgot-password
+  // POST /api/auth/teacher/forgot-password
+  // POST /api/auth/student/forgot-password
+  // POST /api/auth/branch-admin/forgot-password (alias)
+  // POST /api/auth/branch/forgot-password (alias)
   const forgotPassword = async (role: 'admin' | 'teacher' | 'student', identifier: string, corporateId?: string) => {
     try {
-      const endpoint = `${API_BASE_URL}/api/auth/${role}/forgot-password`;
+      const endpointMap: Record<string, string[]> = {
+        admin: [
+          `${API_BASE_URL}/api/auth/admin/forgot-password`,
+          `${API_BASE_URL}/api/auth/branch-admin/forgot-password`,
+          `${API_BASE_URL}/api/auth/branch/forgot-password`
+        ],
+        teacher: [`${API_BASE_URL}/api/auth/teacher/forgot-password`],
+        student: [`${API_BASE_URL}/api/auth/student/forgot-password`]
+      };
+      const targets = endpointMap[role] || [`${API_BASE_URL}/api/auth/${role}/forgot-password`];
       const body = role === 'admin' ? { identifier, corporateId } : { identifier };
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
+
+      let res: Response | null = null;
+      for (const target of targets) {
+        res = await fetch(target, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        if (res.ok || res.status !== 404) break;
+      }
+      if (!res) throw new Error('No auth forgot-password endpoint reachable');
       const data = await res.json();
       return { success: res.ok, message: data.message };
     } catch (err: any) {
@@ -338,19 +475,123 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Reset password with OTP
+  // Reset password with OTP: POST /api/auth/:role/reset-password
+  // Explicitly references:
+  // POST /api/auth/admin/reset-password
+  // POST /api/auth/teacher/reset-password
+  // POST /api/auth/student/reset-password
+  // POST /api/auth/branch-admin/reset-password (alias)
+  // POST /api/auth/branch/reset-password (alias)
   const resetPassword = async (role: 'admin' | 'teacher' | 'student', payload: any) => {
     try {
-      const endpoint = `${API_BASE_URL}/api/auth/${role}/reset-password`;
-      const res = await fetch(endpoint, {
+      const endpointMap: Record<string, string[]> = {
+        admin: [
+          `${API_BASE_URL}/api/auth/admin/reset-password`,
+          `${API_BASE_URL}/api/auth/branch-admin/reset-password`,
+          `${API_BASE_URL}/api/auth/branch/reset-password`
+        ],
+        teacher: [`${API_BASE_URL}/api/auth/teacher/reset-password`],
+        student: [`${API_BASE_URL}/api/auth/student/reset-password`]
+      };
+      const targets = endpointMap[role] || [`${API_BASE_URL}/api/auth/${role}/reset-password`];
+      let res: Response | null = null;
+      for (const target of targets) {
+        res = await fetch(target, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (res.ok || res.status !== 404) break;
+      }
+      if (!res) throw new Error('No auth reset-password endpoint reachable');
+      const data = await res.json();
+      return { success: res.ok, message: data.message };
+    } catch (err: any) {
+      return { success: false, message: err.message || 'Reset failed' };
+    }
+  };
+
+  // Dispatch Verification / Login OTP (POST /api/auth/send-otp)
+  const sendOtp = async (email: string, mobile: string) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/auth/send-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, mobile })
+      });
+      const data = await res.json().catch(() => ({}));
+      const otpCode = data.data?.otp || data.otp;
+      return {
+        success: res.ok,
+        otp: otpCode,
+        message: data.message || (otpCode ? `OTP generated: ${otpCode}` : (res.ok ? 'OTP sent successfully' : 'Failed to send OTP'))
+      };
+    } catch (err: any) {
+      return { success: false, message: err.message || 'Error sending OTP' };
+    }
+  };
+
+  // Verify OTP & Issue Pre-Registration Token (POST /api/auth/verify-otp)
+  const verifyOtp = async (email: string, mobile: string, otp: string) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/auth/verify-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, mobile, otp })
+      });
+      const data = await res.json().catch(() => ({}));
+      const vToken = data.data?.verificationToken || data.verificationToken || data.token;
+      return {
+        success: res.ok && !!vToken,
+        verificationToken: vToken,
+        message: data.message || (res.ok ? 'OTP verified successfully' : 'Invalid OTP')
+      };
+    } catch (err: any) {
+      return { success: false, message: err.message || 'OTP verification failed' };
+    }
+  };
+
+  // Lookup Corporate Entity by Registration Number (GET /api/corporate/lookup/:registrationNo)
+  const lookupCorporate = async (registrationNo: string) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/corporate/lookup/${encodeURIComponent(registrationNo.trim())}`);
+      const data = await res.json().catch(() => ({}));
+      const corpData = data.data || data.corporate || (data.corporateId ? data : null);
+      const isSuccess = res.ok && data.status !== 'error' && !!corpData;
+      return {
+        success: isSuccess,
+        corporate: corpData,
+        message: data.message || (isSuccess ? 'Corporate entity found' : 'Corporate entity not found')
+      };
+    } catch (err: any) {
+      return { success: false, message: err.message || 'Lookup failed' };
+    }
+  };
+
+  // Initial Corporate Entity Registration (POST /api/corporate/create)
+  const createCorporate = async (
+    name: string,
+    registration_no: string,
+    verificationToken?: string,
+    admin?: { name: string; email: string; mobile: string }
+  ) => {
+    try {
+      const payload: any = {
+        name,
+        registration_no
+      };
+      if (verificationToken) payload.verificationToken = verificationToken;
+      if (admin) payload.admin = admin;
+
+      const res = await fetch(`${API_BASE_URL}/api/corporate/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       const data = await res.json();
-      return { success: res.ok, message: data.message };
+      return { success: res.ok, data: data.data || data, message: data.message };
     } catch (err: any) {
-      return { success: false, message: err.message || 'Reset failed' };
+      return { success: false, message: err.message || 'Corporate creation failed' };
     }
   };
 
@@ -359,7 +600,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       value={{
         currentUser,
         role: currentUser ? currentUser.role : 'GUEST',
-        isAuthenticated: currentUser !== null,
+        isAuthenticated: currentUser !== null && !!getAuthToken(),
         branches,
         currentBranchId,
         setCurrentBranchId: handleBranchChange,
@@ -374,6 +615,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loginStudent,
         forgotPassword,
         resetPassword,
+        sendOtp,
+        verifyOtp,
+        lookupCorporate,
+        createCorporate,
+        fetchLiveProfile,
         refreshBranches: fetchBranches
       }}
     >

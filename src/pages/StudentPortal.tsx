@@ -64,6 +64,7 @@ export default function StudentPortal() {
 
   // Dashboard & Profile
   const [dashboardData, setDashboardData] = useState<any>(null);
+  const [studentProfile, setStudentProfile] = useState<any>(null);
   const [notifications, setNotifications] = useState<StudentNotification[]>([]);
   const [showNotificationsModal, setShowNotificationsModal] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -83,8 +84,18 @@ export default function StudentPortal() {
   // Scorecard Modal
   const [viewingScorecard, setViewingScorecard] = useState<StudentSubmissionDetails | null>(null);
 
-  // 1. Fetch Student Dashboard & Notifications
+  // 1. Fetch Student Dashboard, Profile & Notifications
   const fetchDashboardAndNotifications = async () => {
+    try {
+      // Documented API: GET /api/student/profile
+      const profRes = await fetch(`${API_BASE_URL}/api/student/profile`);
+      if (profRes.ok) {
+        const profData = await profRes.json();
+        const p = profData.data || profData.profile || profData.student;
+        if (p) setStudentProfile(p);
+      }
+    } catch {}
+
     try {
       // Documented API: GET /api/student/dashboard
       const dashRes = await fetch(`${API_BASE_URL}/api/student/dashboard`);
@@ -248,9 +259,10 @@ export default function StudentPortal() {
               Student Portal & Academic Desk
             </span>
           </div>
-          <h1>Welcome, {currentUser?.name || 'Student'}</h1>
+          <h1>Welcome, {studentProfile?.name || currentUser?.name || 'Student'}</h1>
           <p>
-            {currentUser?.admission_no ? `Admission No: ${currentUser.admission_no} • ` : ''}
+            {(studentProfile?.admission_no || currentUser?.admission_no) ? `Admission No: ${studentProfile?.admission_no || currentUser?.admission_no} • ` : ''}
+            {studentProfile?.class_name ? `Class: ${studentProfile.class_name} • ` : ''}
             Access active tests, submit handwritten answer sheets, and review evaluated scorecards with AI Socratic hints
           </p>
         </div>

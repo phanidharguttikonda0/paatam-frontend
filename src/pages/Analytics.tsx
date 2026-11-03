@@ -116,7 +116,7 @@ export default function Analytics() {
             </div>
             <div>
               <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' }}>Average Score</div>
-              <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#0F172A' }}>{overview?.avgScore || 72}%</div>
+              <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#0F172A' }}>{overview?.avgScore != null ? `${overview.avgScore}%` : '—'}</div>
             </div>
           </div>
 
@@ -138,7 +138,7 @@ export default function Analytics() {
             </div>
             <div>
               <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' }}>AI Grading Accuracy</div>
-              <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#0F172A' }}>95.8%</div>
+              <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#0F172A' }}>{overview?.aiAccuracy != null ? `${overview.aiAccuracy}%` : '—'}</div>
             </div>
           </div>
         </div>
