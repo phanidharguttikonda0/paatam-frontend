@@ -102,12 +102,12 @@ export default function Campuses() {
   const [branchSearch, setBranchSearch] = useState('');
   const [adminSearch, setAdminSearch] = useState('');
 
-  // 1. Fetch Branches: GET /api/branch/corporate/all or /api/branch/corporate
+  // 1. Fetch Branches: documented role-specific endpoints only
   const fetchBranches = async () => {
     setIsLoading(true);
     const endpoints = isCorporateAdmin
-      ? [`${API_BASE_URL}/api/branch/corporate/all`, `${API_BASE_URL}/api/branch/corporate`, `${API_BASE_URL}/api/branches`]
-      : [`${API_BASE_URL}/api/branch-admin/my-branches`, `${API_BASE_URL}/api/branches`];
+      ? [`${API_BASE_URL}/api/branch/corporate/all`]
+      : [`${API_BASE_URL}/api/branch-admin/my-branches`];
 
     let found = false;
     for (const ep of endpoints) {
@@ -527,19 +527,11 @@ export default function Campuses() {
         mobile_number: phone.trim()
       };
 
-      let res = await fetch(`${API_BASE_URL}/api/branch/create`, {
+      const res = await fetch(`${API_BASE_URL}/api/branch/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(branchPayload)
       });
-
-      if (!res.ok && res.status === 404) {
-        res = await fetch(`${API_BASE_URL}/api/branches`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(branchPayload)
-        });
-      }
 
       const data = await res.json().catch(() => ({}));
       if (res.ok || data.success || data.status === 'success') {

@@ -11,6 +11,7 @@ export default function PaperDetail() {
   const [searchParams] = useSearchParams();
   const classId = searchParams.get('classId') || '';
   const classSubjectId = searchParams.get('classSubjectId') || '';
+  const sectionId = searchParams.get('sectionId') || searchParams.get('section_id') || '';
   const navigate = useNavigate();
 
   const [activeTab, setActiveTab] = useState<Tab>('results');
@@ -20,26 +21,127 @@ export default function PaperDetail() {
 
   useEffect(() => {
     if (!assignmentId) return;
-    fetch(`${API_BASE_URL}/api/assignments`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.success && Array.isArray(data.assignments)) {
-          const match = data.assignments.find((a: any) => a.id === assignmentId);
-          if (match) setAssignment(match);
+
+    const matchesAssignmentId = (a: any) => String(a?.id ?? a?.assignment_id ?? a?.assignmentId ?? '') === String(assignmentId);
+
+    const normalizePaper = (item: any) => {
+      if (!item) return null;
+      const rawQuestions = item.questions || item.questions_json || [];
+      const questions = Array.isArray(rawQuestions) ? rawQuestions : [];
+      const subjectName = (
+        item.subject ||
+        item.class_subject?.subject_name ||
+        item.class_subject?.name ||
+        item.subject_name ||
+        searchParams.get('subject') ||
+        ''
+      ).trim();
+      const className = (
+        item.className ||
+        item.class_name ||
+        item.class_subject?.class_name ||
+        item.grade ||
+        ''
+      ).trim();
+      const akUrl = String(item.answer_key_url || item.answerKeyUrl || '').trim();
+      const akText = String(item.answer_key_text || item.answerKeyText || '').trim();
+      const isPlaceholderAk = /^marking scheme and rubric for/i.test(akText);
+
+      return {
+        ...item,
+        id: String(item.id ?? item.assignment_id ?? item.assignmentId ?? ''),
+        sectionId: String(item.sectionId ?? item.section_id ?? item.section?.id ?? ''),
+        title: item.title || item.exam_title || 'Question paper',
+        subject: subjectName,
+        className,
+        questions,
+        answer_key_url: akUrl,
+        answerKeyUrl: akUrl,
+        answer_key_text: akText,
+        answerKeyText: isPlaceholderAk ? '' : akText,
+        isPlaceholderAnswerKey: isPlaceholderAk,
+        hasAnswerKey: Boolean(akUrl || (akText && !isPlaceholderAk))
+      };
+    };
+
+    const fetchAssignment = async () => {
+      try {
+        // Preferred path: fetch the paper directly by ID.
+        const directRes = await fetch(`${API_BASE_URL}/api/assignments/${encodeURIComponent(assignmentId)}`);
+        const directData = await directRes.json().catch(() => ({}));
+        const direct = directData?.assignment || directData?.data || (directData?.id || directData?.assignment_id ? directData : null);
+        if (direct && (direct.id || direct.assignment_id || direct.assignmentId)) {
+          setAssignment(normalizePaper(direct));
+          return;
         }
-      })
-      .catch(() => {});
+      } catch {}
+
+      // Fallback path: scan assignment list for legacy backend responses.
+      fetch(`${API_BASE_URL}/api/assignments`)
+        .then((res) => res.json())
+        .then((data) => {
+          const list = Array.isArray(data?.data) ? data.data : (Array.isArray(data?.assignments) ? data.assignments : []);
+          if (list.length > 0) {
+            const match = list.find((a: any) => matchesAssignmentId(a));
+            if (match) setAssignment(normalizePaper(match));
+          }
+        })
+        .catch(() => {});
+    };
+
+    fetchAssignment();
   }, [assignmentId]);
 
   useEffect(() => {
     if (!assignmentId) return;
     const fetchSubmissions = () => {
-      fetch(`${API_BASE_URL}/api/submissions`)
+      // Use the documented endpoint: GET /api/assignments/:id/submissions
+      fetch(`${API_BASE_URL}/api/assignments/${encodeURIComponent(assignmentId)}/submissions?limit=10`)
         .then((res) => res.json())
         .then((data) => {
-          if (data.success && Array.isArray(data.submissions)) {
-            setSubmissions(data.submissions.filter((s: any) => s.assignmentId === assignmentId));
+          const list = Array.isArray(data?.data)
+            ? data.data
+            : (Array.isArray(data?.submissions) ? data.submissions : []);
+
+          const normalized = list.map((s: any) => ({
+            ...s,
+            id: String(s.id || s.submission_id || ''),
+            assignmentId: String(s.assignmentId || s.assignment_id || assignmentId),
+            studentName: s.studentName || s.student_name || 'Unnamed student',
+            submittedAt: s.submittedAt || s.submitted_at || '',
+            score: s.score ?? s.finalScore ?? s.aiEvaluation?.score ?? null,
+            maxScore: s.maxScore ?? s.max_score ?? s.aiEvaluation?.maxScore ?? 0,
+            status: s.status || s.evaluation_status || 'pending'
+          })).filter((s: any) => s.id);
+
+          if (normalized.length > 0) {
+            setSubmissions(normalized);
+            return;
           }
+
+          // Fallback: global submissions list filtered by assignment_id
+          return fetch(`${API_BASE_URL}/api/submissions?assignment_id=${encodeURIComponent(assignmentId)}&limit=10`)
+            .then((r) => r.json())
+            .then((d) => {
+              const fallbackList = Array.isArray(d?.data)
+                ? d.data
+                : (Array.isArray(d?.submissions) ? d.submissions : []);
+
+              const fallbackNormalized = fallbackList
+                .filter((s: any) => !s.assignment_id || String(s.assignment_id) === String(assignmentId))
+                .map((s: any) => ({
+                  ...s,
+                  id: String(s.id || s.submission_id || ''),
+                  assignmentId: String(s.assignmentId || s.assignment_id || assignmentId),
+                  studentName: s.studentName || s.student_name || 'Unnamed student',
+                  submittedAt: s.submittedAt || s.submitted_at || '',
+                  score: s.score ?? s.finalScore ?? s.aiEvaluation?.score ?? null,
+                  maxScore: s.maxScore ?? s.max_score ?? s.aiEvaluation?.maxScore ?? 0,
+                  status: s.status || s.evaluation_status || 'pending'
+                })).filter((s: any) => s.id);
+
+              setSubmissions(fallbackNormalized);
+            });
         })
         .catch(() => {});
     };
@@ -48,7 +150,9 @@ export default function PaperDetail() {
     return () => clearInterval(interval);
   }, [assignmentId]);
 
-  const backUrl = classId && classSubjectId ? `/classes/${classId}/${classSubjectId}` : '/classes';
+  const backUrl = classId && classSubjectId
+    ? `/classes/${classId}/${classSubjectId}${sectionId ? `?sectionId=${encodeURIComponent(sectionId)}` : ''}`
+    : '/classes';
 
   const handleDelete = async () => {
     const title = assignment?.title || 'this question paper';
@@ -110,10 +214,28 @@ export default function PaperDetail() {
           </button>
           <h1>{assignment?.title || 'Question paper'}</h1>
           <p>
-            {assignment ? `${(assignment.questions || []).length} question(s) · ${assignment.answerKeyText ? 'Answer key attached' : 'No answer key'}` : 'Loading paper details…'}
+            {assignment ? (
+              `${(assignment.questions || []).length} question(s) · ${
+                assignment.hasAnswerKey || assignment.answerKeyUrl || (assignment.answerKeyText && !assignment.isPlaceholderAnswerKey)
+                  ? 'Answer key attached'
+                  : 'No answer key'
+              }${assignment.subject ? ` · ${assignment.subject}` : ''}`
+            ) : 'Loading paper details…'}
           </p>
         </div>
-        <div className="page-top-bar-actions">
+        <div className="page-top-bar-actions" style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+          {assignment?.answerKeyUrl && (
+            <a
+              href={assignment.answerKeyUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="btn btn-outline btn-sm"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', color: '#166534', borderColor: '#BBF7D0', background: '#F0FDF4' }}
+            >
+              <FileText className="size-4 text-emerald-600" />
+              <span>View Answer Key PDF</span>
+            </a>
+          )}
           <button
             type="button"
             className="btn btn-outline btn-sm"
@@ -171,9 +293,10 @@ export default function PaperDetail() {
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem' }}>
                 {submissions.map((sub) => {
-                  const scoreVal = sub.finalScore ?? sub.aiEvaluation?.score ?? 0;
-                  const maxScore = sub.maxScore || sub.aiEvaluation?.maxScore || 0;
+                  const scoreVal = sub.score;
+                  const maxScore = Number(sub.maxScore || 0);
                   const isApproved = sub.status === 'approved';
+                  const isCompleted = sub.status === 'graded' || sub.status === 'approved' || sub.evaluation_status === 'completed';
                   return (
                     <div
                       key={sub.id}
@@ -202,10 +325,14 @@ export default function PaperDetail() {
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
                         <div style={{ fontWeight: 800, fontSize: '1rem', color: '#111827' }}>
-                          {scoreVal}/{maxScore} marks
+                          {isCompleted && scoreVal !== null && scoreVal !== undefined
+                            ? `${scoreVal}/${maxScore} marks`
+                            : 'Processing...'}
                         </div>
                         {isApproved ? (
                           <span className="badge badge-green">Approved</span>
+                        ) : isCompleted ? (
+                          <span className="badge badge-blue">Graded</span>
                         ) : (
                           <span className="badge badge-amber">Needs review</span>
                         )}
@@ -243,7 +370,11 @@ export default function PaperDetail() {
 
         {activeTab === 'scan' && (
           <div style={{ margin: '-1.5rem -2rem' }}>
-            <ScanGrade lockAssignmentId={assignmentId} onBatchComplete={() => setActiveTab('results')} />
+            <ScanGrade 
+              lockAssignmentId={assignmentId} 
+              preloadedAssignment={assignment}
+              onBatchComplete={() => setActiveTab('results')} 
+            />
           </div>
         )}
       </div>

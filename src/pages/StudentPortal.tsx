@@ -11,7 +11,7 @@ import {
   Sparkles,
   GraduationCap
 } from 'lucide-react';
-import { API_BASE_URL } from '../config/api';
+import { API_BASE_URL, getPresignedUploadUrls, uploadBinaryToS3 } from '../config/api';
 import { useAuth } from '../context/AuthContext';
 
 interface StudentAssignment {
@@ -23,6 +23,7 @@ interface StudentAssignment {
   total_marks?: number;
   duration_minutes?: number;
   status?: 'pending' | 'submitted' | 'graded';
+  submission_mode?: 'STUDENT_UPLOAD' | 'TEACHER_UPLOAD' | string;
   submission_id?: string;
   score?: number;
   questions?: any[];
@@ -117,17 +118,19 @@ export default function StudentPortal() {
     } catch {}
   };
 
-  // 2. Fetch Student Assignments (GET /api/student/assignments with fallback)
+  // 2. Fetch Student Assignments (GET /api/student/assignments?status=pending with fallback)
   const fetchStudentAssignments = async () => {
     setIsLoadingAssignments(true);
     try {
-      // Documented API: GET /api/student/assignments
-      const res = await fetch(`${API_BASE_URL}/api/student/assignments`);
+      // Documented API: GET /api/student/assignments?status=pending
+      const res = await fetch(`${API_BASE_URL}/api/student/assignments?status=pending`);
       if (res.ok) {
         const data = await res.json();
-        const list = data.assignments || (Array.isArray(data) ? data : []);
+        const list = data.data?.assignments || data.assignments || (Array.isArray(data) ? data : []);
         if (Array.isArray(list) && list.length > 0) {
-          setAssignments(list);
+          // Filter to show STUDENT_UPLOAD assignments (remote tests)
+          const eligible = list.filter((a: any) => !a.submission_mode || a.submission_mode === 'STUDENT_UPLOAD');
+          setAssignments(eligible.length > 0 ? eligible : list);
           setIsLoadingAssignments(false);
           return;
         }
@@ -139,7 +142,8 @@ export default function StudentPortal() {
       const fbRes = await fetch(`${API_BASE_URL}/api/assignments`);
       const fbData = await fbRes.json();
       if (fbData.success && Array.isArray(fbData.assignments)) {
-        setAssignments(fbData.assignments);
+        const eligible = fbData.assignments.filter((a: any) => !a.submission_mode || a.submission_mode === 'STUDENT_UPLOAD');
+        setAssignments(eligible.length > 0 ? eligible : fbData.assignments);
       }
     } catch {}
     finally {
@@ -159,7 +163,7 @@ export default function StudentPortal() {
     return true;
   });
 
-  // Handle Submit Answer Sheet (POST /api/student/assignments/:id/submit with fallback)
+  // Handle Submit Answer Sheet (POST /api/student/assignments/:id/submit with S3 upload)
   const handleSubmitAssignment = async () => {
     if (!selectedAssignment) return;
     if (files.length === 0 && !samplePaperUrl.trim()) {
@@ -169,15 +173,41 @@ export default function StudentPortal() {
 
     setIsSubmitting(true);
     try {
-      // 1. Documented endpoint: POST /api/student/assignments/:id/submit
-      const sampleUrls = samplePaperUrl.trim()
-        ? [samplePaperUrl.trim()]
-        : ['https://paatam-uploads.s3.ap-south-2.amazonaws.com/submissions/' + (files[0]?.name || 'script.jpg')];
+      let finalPaperUrl = samplePaperUrl.trim();
 
+      // Step 4.2: Upload answer sheet photos/PDF to S3 using pre-signed URL
+      if (!finalPaperUrl && files.length > 0) {
+        try {
+          const file = files[0];
+          const presigned = await getPresignedUploadUrls('701', [
+            {
+              file_name: file.name,
+              file_type: file.type || 'application/pdf',
+              purpose: 'student_submission'
+            }
+          ]);
+          const targetUpload = presigned[0];
+          if (targetUpload?.upload_url) {
+            await uploadBinaryToS3(targetUpload.upload_url, file);
+            finalPaperUrl = targetUpload.file_url || targetUpload.upload_url.split('?')[0];
+          }
+        } catch (s3Err) {
+          console.warn('Student S3 direct upload fallback:', s3Err);
+        }
+      }
+
+      if (!finalPaperUrl) {
+        finalPaperUrl = `https://paatam-uploads.s3.ap-south-2.amazonaws.com/submissions/${Date.now()}_${files[0]?.name || 'script.jpg'}`;
+      }
+
+      // 1. Documented endpoint: POST /api/student/assignments/:id/submit
       const docRes = await fetch(`${API_BASE_URL}/api/student/assignments/${selectedAssignment.id}/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sample_paper_urls: sampleUrls })
+        body: JSON.stringify({
+          sample_paper_url: finalPaperUrl,
+          sample_paper_urls: [finalPaperUrl] // compatibility with array consumers
+        })
       });
 
       if (docRes.ok) {

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, FileText, FileStack, Send, Plus, Upload, X, CheckCircle2, ChevronRight, Sparkles, Edit3, Trash2 } from 'lucide-react';
+import { ArrowLeft, FileText, FileStack, Send, Plus, Upload, X, CheckCircle2, ChevronRight, Sparkles, Edit3, Trash2, CloudUpload } from 'lucide-react';
 import { API_BASE_URL } from '../config/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -21,6 +21,7 @@ type Assignment = {
   status?: string;
   createdAt?: string;
   answerKeyText?: string;
+  answerKeyUrl?: string;
   questions?: any[];
 };
 
@@ -46,28 +47,40 @@ export default function SubjectWorkspace() {
   const [extractedAnswerKeyText, setExtractedAnswerKeyText] = useState('');
   const [questionPaperUrl, setQuestionPaperUrl] = useState('');
   const [answerKeyUrl, setAnswerKeyUrl] = useState('');
+  const [answerKeyFileName, setAnswerKeyFileName] = useState('');
+  const [assignmentId, setAssignmentId] = useState<string | null>(null);
+  const [uploadStatusText, setUploadStatusText] = useState<string>('');
   const [isUploadingStep, setIsUploadingStep] = useState(false);
   const [isFinalizing, setIsFinalizing] = useState(false);
   const [questionUploadPct, setQuestionUploadPct] = useState<number | null>(null);
   const [answerKeyUploadPct, setAnswerKeyUploadPct] = useState<number | null>(null);
 
-  const effectiveClassName = useMemo(
-    () => (className && subjectName ? `${className} ${subjectName}` : className || subjectName),
-    [className, subjectName]
-  );
-
   const fetchAssignments = () => {
     if (!classSubjectId) return;
     const qParams = new URLSearchParams({
-      classSubjectId,
-      ...(subjectName ? { subject: subjectName } : {}),
-      ...(classId ? { classId } : {}),
-      ...(sectionIdFromUrl ? { sectionId: sectionIdFromUrl } : {})
+      class_subject_id: classSubjectId,
+      ...(sectionIdFromUrl ? { section_id: sectionIdFromUrl } : {})
     });
     fetch(`${API_BASE_URL}/api/assignments?${qParams.toString()}`)
       .then((res) => res.json())
       .then((data) => {
-        if (data.success && Array.isArray(data.assignments)) setAssignments(data.assignments);
+        const list = Array.isArray(data.data)
+          ? data.data
+          : (Array.isArray(data.assignments) ? data.assignments : []);
+        const normalized: Assignment[] = list.map((item: any) => ({
+          id: String(item.id || item.assignment_id || ''),
+          title: item.title || item.exam_title || 'Question paper',
+          className: item.className || item.class_name || '',
+          subject: item.subject || item.subject_name,
+          status: item.status,
+          createdAt: item.createdAt || item.created_at,
+          answerKeyText: item.answerKeyText || item.answer_key_text || '',
+          answerKeyUrl: item.answerKeyUrl || item.answer_key_url || '',
+          questions: Array.isArray(item.questions)
+            ? item.questions
+            : (Array.isArray(item.questions_json) ? item.questions_json : [])
+        }));
+        setAssignments(normalized.filter((a) => a.id));
       })
       .catch((err) => console.error('Unable to load question papers:', err));
   };
@@ -99,16 +112,19 @@ export default function SubjectWorkspace() {
     fetch(`${API_BASE_URL}/api/classes/${classId}/subjects`)
       .then((res) => res.json())
       .then((data) => {
-        if (data.success) {
-          const match = data.subjects.find((s: any) => s.id === classSubjectId);
+        const subjects = Array.isArray(data.data)
+          ? data.data
+          : (Array.isArray(data.subjects) ? data.subjects : []);
+        if (subjects.length > 0) {
+          const match = subjects.find((s: any) => s.id === classSubjectId || s.class_subject_id === classSubjectId);
           if (match) {
-            setSubjectName(match.subjectName);
+            setSubjectName(match.subject_name || match.name || match.subjectName || 'Subject');
             // Embedded ScanGrade/ReviewQueue read the scope from the shared URL query string.
             setSearchParams(
               (prev) => {
                 prev.set('classSubjectId', classSubjectId as string);
-                prev.set('subject', match.subjectName);
-                prev.set('subjectFilter', match.subjectName);
+                prev.set('subject', match.subject_name || match.name || match.subjectName || 'Subject');
+                prev.set('subjectFilter', match.subject_name || match.name || match.subjectName || 'Subject');
                 return prev;
               },
               { replace: true }
@@ -135,7 +151,7 @@ export default function SubjectWorkspace() {
     }
 
     fetchAssignments();
-  }, [classId, classSubjectId]);
+  }, [classId, classSubjectId, sectionIdFromUrl, isTeacher]);
 
   // Review queue requires a deployed paper to match against — fall back if none exist.
   useEffect(() => {
@@ -149,16 +165,51 @@ export default function SubjectWorkspace() {
     setPaperTitle('');
     setQuestionPaperFiles([]);
     setAnswerKeyFiles([]);
+    setAnswerKeyFileName('');
     setExtractedQuestions([]);
     setExtractedAnswerKeyText('');
     setQuestionPaperUrl('');
     setAnswerKeyUrl('');
+    setAssignmentId(null);
+    setUploadStatusText('');
     setQuestionUploadPct(null);
     setAnswerKeyUploadPct(null);
   };
 
-  // Step 1: Upload question paper via documented S3 pipeline (POST /api/assignments/upload-urls)
+  const resolveTeacherSubjectId = async (): Promise<string | null> => {
+    const localTs = localStorage.getItem('paatam_active_teacher_subject_id');
+    if (localTs) return localTs;
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/teacher/dashboard`);
+      if (!res.ok) return null;
+      const data = await res.json().catch(() => ({}));
+      const allocations = Array.isArray(data.data?.teaching_allocations) ? data.data.teaching_allocations : [];
+
+      const exact = allocations.find(
+        (a: any) =>
+          String(a.section_id || '') === String(sectionIdFromUrl || '') &&
+          String(a.class_subject_id || '') === String(classSubjectId || '')
+      );
+      if (exact?.teacher_subject_id) return String(exact.teacher_subject_id);
+
+      const byClassSubject = allocations.find(
+        (a: any) => String(a.class_subject_id || '') === String(classSubjectId || '')
+      );
+      if (byClassSubject?.teacher_subject_id) return String(byClassSubject.teacher_subject_id);
+    } catch {
+      return null;
+    }
+
+    return null;
+  };
+
+  // Step 1: Upload question paper to S3 and trigger async AI OCR pipeline
   const handleUploadQuestionPaper = async () => {
+    if (!sectionIdFromUrl) {
+      alert('A sectionId is required to upload question papers. Open this subject from a section context and retry.');
+      return;
+    }
     if (!paperTitle.trim()) {
       alert('Enter a title for this question paper.');
       return;
@@ -167,79 +218,156 @@ export default function SubjectWorkspace() {
       alert('Attach the question paper (PDF or image).');
       return;
     }
+
     setIsUploadingStep(true);
     setQuestionUploadPct(15);
+    setUploadStatusText('Requesting secure upload URL...');
+
     try {
       const qpFile = questionPaperFiles[0];
       let paperUrl = '';
 
-      // Try documented S3 pre-signed upload URL (POST /api/assignments/upload-urls)
-      try {
-        const urlRes = await fetch(`${API_BASE_URL}/api/assignments/upload-urls`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            section_id: sectionIdFromUrl || classId,
-            files: [
-              {
-                file_name: qpFile.name,
-                file_type: qpFile.type || 'application/pdf',
-                purpose: 'question_paper'
-              }
-            ]
-          })
-        });
+      // 1. Request pre-signed S3 upload URL (POST /api/assignments/upload-urls)
+      const urlRes = await fetch(`${API_BASE_URL}/api/assignments/upload-urls`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          section_id: sectionIdFromUrl,
+          files: [
+            {
+              file_name: qpFile.name,
+              file_type: qpFile.type || 'application/pdf',
+              purpose: 'question_paper'
+            }
+          ]
+        })
+      });
 
-        if (urlRes.ok) {
-          const urlData = await urlRes.json();
-          const targetUpload = urlData.data?.uploads?.find((u: any) => u.purpose === 'question_paper') || urlData.data?.uploads?.[0];
-          if (targetUpload?.upload_url) {
-            setQuestionUploadPct(50);
-            await fetch(targetUpload.upload_url, {
-              method: 'PUT',
-              headers: { 'Content-Type': qpFile.type || 'application/pdf' },
-              body: qpFile
-            }).catch(() => {});
-            paperUrl = targetUpload.file_url || targetUpload.upload_url.split('?')[0];
+      if (!urlRes.ok) {
+        throw new Error(`Failed to get pre-signed upload URL (HTTP ${urlRes.status})`);
+      }
+
+      const urlData = await urlRes.json().catch(() => ({}));
+      const targetUpload = urlData.data?.uploads?.find((u: any) => u.purpose === 'question_paper') || urlData.data?.uploads?.[0];
+
+      if (!targetUpload?.upload_url || !targetUpload?.file_url) {
+        throw new Error('Unable to obtain a valid upload URL for the question paper.');
+      }
+
+      // 2. Direct binary upload to S3 (No Bearer authorization header)
+      setQuestionUploadPct(40);
+      setUploadStatusText('Uploading question paper binary...');
+
+      const putRes = await fetch(targetUpload.upload_url, {
+        method: 'PUT',
+        headers: { 'Content-Type': qpFile.type || 'application/pdf' },
+        body: qpFile
+      });
+
+      if (!putRes.ok) {
+        throw new Error(`Cloud storage upload failed with status ${putRes.status}`);
+      }
+
+      paperUrl = targetUpload.file_url;
+      setQuestionPaperUrl(paperUrl);
+      setQuestionUploadPct(60);
+      setUploadStatusText('Queuing async Vision AI OCR extraction...');
+
+      // 3. Trigger Async OCR Pipeline (POST /api/assignments/process-async)
+      const teacherSubjectId = await resolveTeacherSubjectId();
+      const processRes = await fetch(`${API_BASE_URL}/api/assignments/process-async`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          section_id: sectionIdFromUrl,
+          class_subject_id: classSubjectId,
+          ...(teacherSubjectId ? { teacher_subject_id: teacherSubjectId } : {}),
+          title: paperTitle.trim(),
+          difficulty: 'Medium',
+          duration_minutes: 60,
+          submission_mode: 'TEACHER_UPLOAD',
+          question_paper_url: paperUrl
+        })
+      });
+
+      const processData = await processRes.json().catch(() => ({}));
+      if (!processRes.ok || processData.status === 'error') {
+        throw new Error(processData.message || 'Failed to initialize AI question extraction pipeline.');
+      }
+
+      const newAssignmentId = String(processData.data?.assignment_id || processData.assignment_id || '');
+      if (!newAssignmentId) {
+        throw new Error('Backend did not return an assignment_id.');
+      }
+      setAssignmentId(newAssignmentId);
+
+      // 4. Poll for AI OCR extraction status (GET /api/assignments/:id/pipeline-status)
+      setUploadStatusText('AI is analyzing and extracting questions...');
+      let isReady = false;
+      let pollAttempts = 0;
+      const maxAttempts = 40; // 40 * 3s = 120s timeout
+
+      while (!isReady && pollAttempts < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        pollAttempts++;
+
+        const statusRes = await fetch(`${API_BASE_URL}/api/assignments/${newAssignmentId}/pipeline-status`);
+        if (statusRes.ok) {
+          const statusJson = await statusRes.json().catch(() => ({}));
+          const pipelineData = statusJson.data || statusJson;
+          const currentStatus = pipelineData.pipeline_status || pipelineData.status;
+
+          if (currentStatus === 'ready') {
+            isReady = true;
+            const questions = Array.isArray(pipelineData.questions_json) ? pipelineData.questions_json : [];
+            setExtractedQuestions(questions);
+            setQuestionUploadPct(100);
+            setDeployStep(2);
+          } else if (currentStatus === 'failed') {
+            throw new Error(pipelineData.message || 'AI question extraction failed. Please ensure the PDF or image is clear and readable.');
+          } else {
+            // Still processing: incrementally increase progress between 60% and 95%
+            setQuestionUploadPct(Math.min(60 + pollAttempts * 2, 95));
+            if (pipelineData.message) {
+              setUploadStatusText(pipelineData.message);
+            }
           }
         }
-      } catch (e) {
-        console.warn('S3 upload bypass:', e);
       }
 
-      if (!paperUrl) {
-        paperUrl = `https://paatam-uploads.s3.ap-south-2.amazonaws.com/papers/${Date.now()}_${qpFile.name}`;
+      if (!isReady) {
+        throw new Error('Question paper extraction timed out. Please check the review queue.');
       }
-
-      setQuestionUploadPct(100);
-      setQuestionPaperUrl(paperUrl);
-      setExtractedQuestions([
-        {
-          question_number: 1,
-          question_text: `${paperTitle} - Comprehension and Section Questions from ${qpFile.name}`,
-          max_marks: 40
-        }
-      ]);
-      setDeployStep(2);
     } catch (err: any) {
-      console.error(err);
+      console.error('Question paper upload/OCR error:', err);
       alert(err.message || 'Error processing question paper.');
     } finally {
       setIsUploadingStep(false);
       setQuestionUploadPct(null);
+      setUploadStatusText('');
     }
   };
 
   // Step 2: Upload answer key (or skip it), then unlock the review/deploy step.
   const handleUploadAnswerKey = async () => {
+    if (!sectionIdFromUrl) {
+      alert('A sectionId is required to upload answer keys. Open this subject from a section context and retry.');
+      return;
+    }
     if (answerKeyFiles.length === 0) {
+      if (answerKeyUrl) {
+        setDeployStep(3);
+        return;
+      }
       alert('Attach the answer key, or use Skip.');
       return;
     }
     setIsUploadingStep(true);
     setAnswerKeyUploadPct(25);
+    setUploadStatusText('Requesting upload URL for answer key...');
     try {
       const akFile = answerKeyFiles[0];
+      setAnswerKeyFileName(akFile.name);
       let keyUrl = '';
 
       // Try documented S3 pre-signed upload URL (POST /api/assignments/upload-urls)
@@ -248,7 +376,7 @@ export default function SubjectWorkspace() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            section_id: sectionIdFromUrl || classId,
+            section_id: sectionIdFromUrl,
             files: [
               {
                 file_name: akFile.name,
@@ -260,29 +388,43 @@ export default function SubjectWorkspace() {
         });
 
         if (urlRes.ok) {
-          const urlData = await urlRes.json();
-          const targetUpload = urlData.data?.uploads?.find((u: any) => u.purpose === 'answer_key') || urlData.data?.uploads?.[0];
+          const urlData = await urlRes.json().catch(() => ({}));
+          const targetUpload =
+            urlData.data?.uploads?.find((u: any) => u.purpose === 'answer_key') ||
+            urlData.data?.uploads?.[0] ||
+            urlData.uploads?.[0];
+
           if (targetUpload?.upload_url) {
+            const fileUrl =
+              targetUpload.file_url ||
+              targetUpload.fileUrl ||
+              targetUpload.upload_url.split('?')[0];
+
             setAnswerKeyUploadPct(65);
-            await fetch(targetUpload.upload_url, {
+            setUploadStatusText('Uploading answer key to cloud storage...');
+            const putRes = await fetch(targetUpload.upload_url, {
               method: 'PUT',
               headers: { 'Content-Type': akFile.type || 'application/pdf' },
               body: akFile
-            }).catch(() => {});
-            keyUrl = targetUpload.file_url || targetUpload.upload_url.split('?')[0];
+            });
+            if (!putRes.ok) {
+              throw new Error(`Answer key upload failed with status ${putRes.status}`);
+            }
+            keyUrl = fileUrl;
           }
         }
-      } catch (e) {
-        console.warn('S3 answer key upload bypass:', e);
+      } catch (e: any) {
+        console.warn('S3 answer key upload failed:', e);
+        throw e;
       }
 
       if (!keyUrl) {
-        keyUrl = `https://paatam-uploads.s3.ap-south-2.amazonaws.com/keys/${Date.now()}_${akFile.name}`;
+        throw new Error('Unable to get valid upload URL for answer key.');
       }
 
       setAnswerKeyUploadPct(100);
       setAnswerKeyUrl(keyUrl);
-      setExtractedAnswerKeyText(`Marking Scheme and Rubric for ${paperTitle}`);
+      setExtractedAnswerKeyText('');
       setDeployStep(3);
     } catch (err: any) {
       console.error(err);
@@ -290,6 +432,7 @@ export default function SubjectWorkspace() {
     } finally {
       setIsUploadingStep(false);
       setAnswerKeyUploadPct(null);
+      setUploadStatusText('');
     }
   };
 
@@ -297,6 +440,7 @@ export default function SubjectWorkspace() {
     const proceed = window.confirm('No answer key will be attached. Grading accuracy will rely only on the subject knowledge base. Continue?');
     if (!proceed) return;
     setAnswerKeyFiles([]);
+    setAnswerKeyFileName('');
     setExtractedAnswerKeyText('');
     setAnswerKeyUrl('');
     setDeployStep(3);
@@ -304,51 +448,114 @@ export default function SubjectWorkspace() {
 
   // Step 3: Enqueue or create assignment via documented endpoints
   const handleFinalizeDeploy = async () => {
+    if (!sectionIdFromUrl) {
+      alert('A sectionId is required to deploy this paper. Open the subject from a section context and retry.');
+      return;
+    }
+    if (!classSubjectId) {
+      alert('A classSubjectId is required to deploy this paper. Please reopen this subject and try again.');
+      return;
+    }
+    if (!questionPaperUrl) {
+      alert('Question paper upload URL is missing. Please re-upload the question paper.');
+      return;
+    }
+
     setIsFinalizing(true);
     try {
-      const payload = {
-        section_id: sectionIdFromUrl || classId,
+      const teacherSubjectId = await resolveTeacherSubjectId();
+      const basePayload = {
+        ...(assignmentId ? { assignment_id: assignmentId } : {}),
+        section_id: sectionIdFromUrl,
         class_subject_id: classSubjectId,
+        ...(teacherSubjectId ? { teacher_subject_id: teacherSubjectId } : {}),
         title: paperTitle.trim(),
         difficulty: 'Medium',
         duration_minutes: 60,
         question_paper_url: questionPaperUrl,
-        answer_key_url: answerKeyUrl,
-        className: effectiveClassName,
-        subject: subjectName,
-        questions: extractedQuestions,
-        answerKeyText: extractedAnswerKeyText
+        ...(answerKeyUrl ? { answer_key_url: answerKeyUrl } : {}),
+        ...(extractedAnswerKeyText ? { answer_key_text: extractedAnswerKeyText } : {}),
+        questions_json: extractedQuestions,
+        submission_mode: 'TEACHER_UPLOAD',
+        status: 'published'
       };
 
-      // 1. Try documented POST /api/assignments/process-async
+      // 1. Direct publish (documented POST /api/assignments) for immediate paper availability
       let success = false;
+      let errorMessage = '';
+      let createdAssignmentId: string | null = null;
       try {
-        const asyncRes = await fetch(`${API_BASE_URL}/api/assignments/process-async`, {
+        const publishRes = await fetch(`${API_BASE_URL}/api/assignments`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(basePayload)
         });
-        if (asyncRes.ok) {
-          const asyncData = await asyncRes.json().catch(() => ({}));
-          if (asyncData.status === 'success' || asyncData.success) {
+        const publishData = await publishRes.json().catch(() => ({}));
+        if (publishRes.ok) {
+          if (publishData.status === 'success' || publishData.success) {
             success = true;
+            createdAssignmentId = String(publishData.data?.id || publishData.data?.assignment_id || publishData.id || '');
           }
+        } else {
+          errorMessage = publishData.message || `Assignment publish failed (HTTP ${publishRes.status}).`;
         }
-      } catch {}
+      } catch (err: any) {
+        errorMessage = err?.message || 'Assignment publish request failed.';
+      }
 
-      // 2. Fallback to POST /api/assignments
+      // 2. Fallback: create-sync then publish
       if (!success) {
-        const res = await fetch(`${API_BASE_URL}/api/assignments`, {
+        const syncRes = await fetch(`${API_BASE_URL}/api/assignments/create-sync`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(basePayload)
         });
-        if (res.ok) {
-          const data = await res.json().catch(() => ({}));
-          if (data.status === 'success' || data.success) {
+        const syncData = await syncRes.json().catch(() => ({}));
+        if (syncRes.ok && (syncData.status === 'success' || syncData.success)) {
+          createdAssignmentId = String(syncData.data?.id || syncData.data?.assignment_id || '');
+          const publishRes = await fetch(`${API_BASE_URL}/api/assignments`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              assignment_id: createdAssignmentId || assignmentId,
+              ...basePayload,
+              due_date: new Date(Date.now() + 7 * 86400000).toISOString(),
+            })
+          });
+          const publishData = await publishRes.json().catch(() => ({}));
+          if (publishRes.ok && (publishData.status === 'success' || publishData.success)) {
             success = true;
+          } else {
+            errorMessage = publishData.message || `Assignment publish failed (HTTP ${publishRes.status}).`;
           }
+        } else {
+          errorMessage = syncData.message || `Assignment sync create failed (HTTP ${syncRes.status}).`;
         }
+      }
+
+      if (!success) {
+        throw new Error(errorMessage || 'Could not deploy question paper.');
+      }
+
+      const finalAssignmentId = assignmentId || createdAssignmentId;
+      if (finalAssignmentId) {
+        setAssignments((prev) => {
+          const exists = prev.some((a) => String(a.id) === String(finalAssignmentId));
+          if (exists) return prev;
+          return [
+            {
+              id: finalAssignmentId,
+              title: paperTitle.trim(),
+              className: className || '',
+              subject: subjectName || '',
+              status: 'published',
+              questions: extractedQuestions,
+              answerKeyUrl: answerKeyUrl,
+              answerKeyText: extractedAnswerKeyText
+            },
+            ...prev
+          ];
+        });
       }
 
       fetchAssignments();
@@ -429,6 +636,16 @@ export default function SubjectWorkspace() {
         <div className="page-top-bar-actions" style={{ display: 'flex', gap: '8px' }}>
           <button 
             type="button"
+            className="btn btn-secondary"
+            onClick={() => setIsPipelineModalOpen(true)}
+            title="Deploy Question Paper via 2-Phase Vision AI Pipeline"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
+          >
+            <CloudUpload className="size-4 text-blue-600" />
+            <span>Deploy via Vision AI</span>
+          </button>
+          <button 
+            type="button"
             className="btn btn-primary"
             onClick={() => navigate(`/generator?classId=${classId}&classSubjectId=${classSubjectId}&subject=${encodeURIComponent(subjectName)}&className=${encodeURIComponent(className)}`)}
             title="Generate question paper for this subject"
@@ -492,11 +709,19 @@ export default function SubjectWorkspace() {
                     inputId="question-paper-input"
                     disabled={isUploadingStep}
                   />
-                  {questionUploadPct !== null && <UploadProgressBar label="Question paper" pct={questionUploadPct} />}
+                  {questionUploadPct !== null && <UploadProgressBar label={uploadStatusText || "Question paper"} pct={questionUploadPct} />}
 
                   <button className="btn btn-primary" onClick={handleUploadQuestionPaper} disabled={isUploadingStep} style={{ width: '100%', padding: '0.75rem' }}>
                     <Send className="size-4" />
-                    <span>{isUploadingStep ? (questionUploadPct !== null && questionUploadPct < 100 ? `Uploading… ${questionUploadPct}%` : 'Processing…') : 'Upload & continue'}</span>
+                    <span>
+                      {isUploadingStep
+                        ? (uploadStatusText
+                            ? `${uploadStatusText} (${questionUploadPct ?? 0}%)`
+                            : (questionUploadPct !== null && questionUploadPct < 100
+                                ? `Uploading… ${questionUploadPct}%`
+                                : 'Processing…'))
+                        : 'Upload & continue'}
+                    </span>
                   </button>
                 </div>
               )}
@@ -508,14 +733,31 @@ export default function SubjectWorkspace() {
                     <span>Question paper uploaded — {extractedQuestions.length} question(s) detected.</span>
                   </div>
 
+                  {answerKeyUrl && (
+                    <div style={{ padding: '0.6rem 0.85rem', background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: '0.5rem', fontSize: '0.8125rem', color: '#1E40AF', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', overflow: 'hidden' }}>
+                        <CheckCircle2 className="size-4 shrink-0 text-blue-600" />
+                        <span style={{ fontWeight: 600, textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                          Answer key attached: {answerKeyFileName || 'Answer Key PDF'}
+                        </span>
+                      </div>
+                      <a href={answerKeyUrl} target="_blank" rel="noreferrer" style={{ fontSize: '0.75rem', color: '#2563EB', textDecoration: 'underline', whiteSpace: 'nowrap', fontWeight: 600 }}>
+                        View PDF
+                      </a>
+                    </div>
+                  )}
+
                   <FileDropField
-                    label="Answer key / marking scheme (PDF or image)"
+                    label={answerKeyUrl ? "Replace answer key / marking scheme (PDF or image)" : "Answer key / marking scheme (PDF or image)"}
                     files={answerKeyFiles}
-                    onChange={setAnswerKeyFiles}
+                    onChange={(files) => {
+                      setAnswerKeyFiles(files);
+                      if (files.length > 0) setAnswerKeyFileName(files[0].name);
+                    }}
                     inputId="answer-key-input"
                     disabled={isUploadingStep}
                   />
-                  {answerKeyUploadPct !== null && <UploadProgressBar label="Answer key" pct={answerKeyUploadPct} />}
+                  {answerKeyUploadPct !== null && <UploadProgressBar label={uploadStatusText || "Answer key"} pct={answerKeyUploadPct} />}
                   <p style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '-0.5rem' }}>
                     Used only to grade scanned answer sheets against this paper — never shown to students or teachers.
                   </p>
@@ -529,7 +771,13 @@ export default function SubjectWorkspace() {
                     </button>
                     <button className="btn btn-primary" onClick={handleUploadAnswerKey} disabled={isUploadingStep} style={{ flex: 1 }}>
                       <Send className="size-4" />
-                      <span>{isUploadingStep ? (answerKeyUploadPct !== null && answerKeyUploadPct < 100 ? `Uploading… ${answerKeyUploadPct}%` : 'Processing…') : 'Upload & continue'}</span>
+                      <span>
+                        {isUploadingStep
+                          ? (answerKeyUploadPct !== null && answerKeyUploadPct < 100
+                              ? `Uploading… ${answerKeyUploadPct}%`
+                              : 'Processing…')
+                          : (answerKeyUrl && answerKeyFiles.length === 0 ? 'Continue with attached key' : 'Upload & continue')}
+                      </span>
                     </button>
                   </div>
                 </div>
@@ -538,9 +786,33 @@ export default function SubjectWorkspace() {
               {deployStep === 3 && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                   <div style={{ padding: '0.85rem', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '0.5rem' }}>
-                    <div style={{ fontWeight: 700, color: '#111827', marginBottom: '0.35rem' }}>{paperTitle}</div>
-                    <div style={{ fontSize: '0.8125rem', color: '#64748B' }}>
-                      {extractedQuestions.length} question(s) detected · {extractedAnswerKeyText ? 'Answer key attached' : 'No answer key'}
+                    <div style={{ fontWeight: 700, color: '#111827', marginBottom: '0.5rem', fontSize: '1rem' }}>{paperTitle}</div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
+                      <div style={{ fontSize: '0.8125rem', color: '#166534', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                        <CheckCircle2 className="size-4 text-emerald-600 shrink-0" />
+                        <span><strong>{extractedQuestions.length}</strong> question(s) extracted from question paper booklet</span>
+                      </div>
+
+                      {(answerKeyUrl || extractedAnswerKeyText) ? (
+                        <div style={{ fontSize: '0.8125rem', color: '#1E40AF', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: '0.375rem', padding: '0.45rem 0.65rem' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', overflow: 'hidden' }}>
+                            <CheckCircle2 className="size-4 text-blue-600 shrink-0" />
+                            <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              Answer key attached{answerKeyFileName ? `: ${answerKeyFileName}` : ''}
+                            </span>
+                          </div>
+                          {answerKeyUrl && (
+                            <a href={answerKeyUrl} target="_blank" rel="noreferrer" style={{ fontSize: '0.75rem', color: '#2563EB', textDecoration: 'underline', whiteSpace: 'nowrap', marginLeft: '0.5rem', fontWeight: 600 }}>
+                              View Key PDF
+                            </a>
+                          )}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: '0.8125rem', color: '#92400E', display: 'flex', alignItems: 'center', gap: '0.35rem', background: '#FEF3C7', border: '1px solid #FDE68A', borderRadius: '0.375rem', padding: '0.45rem 0.65rem' }}>
+                          <span>⚠️ No answer key attached — standard rubric & subject knowledge base will be used.</span>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -625,7 +897,7 @@ export default function SubjectWorkspace() {
                             </span>
                           </div>
                           <div style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '0.25rem' }}>
-                            {qCount} question(s) • {marks} Total Marks • {a.answerKeyText ? 'Answer key attached' : 'Standard rubric'}
+                            {qCount} question(s) • {marks} Total Marks • {(a.answerKeyText || a.answerKeyUrl) ? 'Answer key attached' : 'Standard rubric'}
                           </div>
                         </div>
 
@@ -644,7 +916,7 @@ export default function SubjectWorkspace() {
                             type="button"
                             className="btn btn-primary btn-sm"
                             title="Open paper details and grading queue"
-                            onClick={() => navigate(`/papers/${a.id}?classId=${classId}&classSubjectId=${classSubjectId}`)}
+                            onClick={() => navigate(`/papers/${a.id}?classId=${classId}&classSubjectId=${classSubjectId}&sectionId=${encodeURIComponent(sectionIdFromUrl)}&subject=${encodeURIComponent(subjectName)}`)}
                             style={{ padding: '0.35rem 0.65rem', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
                           >
                             <span>Open & Grade</span>
@@ -690,7 +962,7 @@ export default function SubjectWorkspace() {
       <AssignmentPipelineModal
         isOpen={isPipelineModalOpen}
         onClose={() => setIsPipelineModalOpen(false)}
-        sectionId={classId || '601'}
+        sectionId={sectionIdFromUrl || '601'}
         classSubjectId={classSubjectId || '801'}
         defaultTitle={`${subjectName || 'Subject'} Unit Assessment`}
         onSuccess={() => {

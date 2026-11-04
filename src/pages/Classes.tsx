@@ -108,7 +108,9 @@ export default function Classes() {
   const [editClassOrder, setEditClassOrder] = useState<number>(10);
   const [isUpdatingClass, setIsUpdatingClass] = useState(false);
 
-  // 1. Fetch Academic Years for Branch or Global
+  const isNumericId = (id?: string) => !!id && /^\d+$/.test(String(id));
+
+  // 1. Fetch Academic Years for selected branch
   const fetchAcademicYears = async () => {
     if (isTeacher) return;
     let rawList: any[] = [];
@@ -119,16 +121,6 @@ export default function Classes() {
         if (res.ok) {
           const data = await res.json();
           rawList = Array.isArray(data.data) ? data.data : Array.isArray(data.academicYears) ? data.academicYears : [];
-        }
-      } catch (e) {}
-    }
-
-    if (rawList.length === 0) {
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/academic-years`);
-        if (res.ok) {
-          const data = await res.json();
-          rawList = Array.isArray(data.data) ? data.data : Array.isArray(data.academicYears) ? data.academicYears : Array.isArray(data) ? data : [];
         }
       } catch (e) {}
     }
@@ -148,15 +140,8 @@ export default function Classes() {
         setSelectedAcademicYearId(activeOne.id);
       }
     } else {
-      const defaultAY: AcademicYear = {
-        id: 'ay_active',
-        name: '2026 - 2027',
-        start_year: 2026,
-        end_year: 2027,
-        is_active: true
-      };
-      setAcademicYears([defaultAY]);
-      setSelectedAcademicYearId(defaultAY.id);
+      setAcademicYears([]);
+      setSelectedAcademicYearId('');
     }
   };
 
@@ -178,49 +163,58 @@ export default function Classes() {
             ? data.data.class_teacher_sections
             : [];
 
-          const classMap = new Map<string, ClassItem>();
+          const resolvedTeacherId = String(data?.data?.teacher_id || currentUser?.id || (currentUser as any)?.teacher_id || (currentUser as any)?.staff_id || '').trim();
+          const resolvedTeacherName = String(data?.data?.teacher_name || currentUser?.name || '').toLowerCase().trim();
 
-          // Role-based section filter: only include sections explicitly allocated to this teacher
-          const teacherId = String(currentUser?.id || (currentUser as any)?.teacher_id || (currentUser as any)?.staff_id || '');
-          const teacherName = (currentUser?.name || '').toLowerCase();
-          const explicitSectionIds = new Set<string>();
-          const explicitSectionNames = new Set<string>();
-
-          for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
-            if (key && (key.startsWith('paatam_section_allocations_') || key.startsWith('paatam_section_allocations_name_'))) {
-              const sId = key.replace(/^paatam_section_allocations_(name_)?/, '');
+          let allocationsValidated = false;
+          try {
+            const uniqueSectionIds = Array.from(new Set(allocations.map((a: any) => String(a.section_id)).filter(Boolean)));
+            const sectionRows = await Promise.all(uniqueSectionIds.map(async (sectionId) => {
               try {
-                const raw = localStorage.getItem(key);
-                if (raw) {
-                  const list = JSON.parse(raw);
-                  if (Array.isArray(list)) {
-                    for (const alloc of list) {
-                      const matchesTeacher =
-                        String(alloc.teacher_id) === teacherId ||
-                        String(alloc.teacher?.id) === teacherId ||
-                        String(alloc.teacher?.teacher_id) === teacherId ||
-                        (teacherId && (String(alloc.teacher_id).includes(teacherId) || teacherId.includes(String(alloc.teacher_id)))) ||
-                        (teacherName && alloc.teacher?.name && alloc.teacher.name.toLowerCase().includes(teacherName)) ||
-                        (teacherName && alloc.teacher_name && alloc.teacher_name.toLowerCase().includes(teacherName));
+                const sr = await fetch(`${API_BASE_URL}/api/sections/${sectionId}/subjects-teachers`);
+                if (!sr.ok) return { sectionId, rows: [] as any[] };
+                const sj = await sr.json().catch(() => ({}));
+                const rows = Array.isArray(sj.data)
+                  ? sj.data
+                  : (Array.isArray(sj.subjectsTeachers) ? sj.subjectsTeachers : []);
+                return { sectionId, rows };
+              } catch {
+                return { sectionId, rows: [] as any[] };
+              }
+            }));
 
-                      if (matchesTeacher) {
-                        explicitSectionIds.add(String(sId));
-                        if (alloc.section_name) {
-                          explicitSectionNames.add(cleanSecName(alloc.section_name));
-                        }
-                      }
-                    }
-                  }
+            const bySection = new Map<string, any[]>();
+            sectionRows.forEach((x) => bySection.set(String(x.sectionId), x.rows));
+
+            allocations = allocations.filter((a: any) => {
+              const rows = bySection.get(String(a.section_id)) || [];
+              return rows.some((row: any) => {
+                const teacher = row?.assigned_teacher;
+                if (!teacher) return false;
+
+                const teacherMatches =
+                  (resolvedTeacherId && (String(teacher.id || '') === resolvedTeacherId || String(teacher.teacher_id || '') === resolvedTeacherId)) ||
+                  (resolvedTeacherName && String(teacher.name || '').toLowerCase().trim() === resolvedTeacherName);
+
+                if (!teacherMatches) return false;
+                if (a.class_subject_id && row.class_subject_id) {
+                  return String(row.class_subject_id) === String(a.class_subject_id);
                 }
-              } catch {}
-            }
+                return cleanSecName(row.section_name || a.section_name) === cleanSecName(a.section_name);
+              });
+            });
+            allocationsValidated = true;
+          } catch {
+            allocationsValidated = false;
           }
 
-          if (explicitSectionIds.size > 0 || explicitSectionNames.size > 0) {
+          if (!allocationsValidated) {
+            allocations = [];
+          }
+
+          const classMap = new Map<string, ClassItem>();
+          if (classTeacherSecs.length > 0) {
             allocations = allocations.filter((a: any) =>
-              explicitSectionIds.has(String(a.section_id)) ||
-              explicitSectionNames.has(cleanSecName(a.section_name)) ||
               classTeacherSecs.some((ct: any) =>
                 String(ct.section_id) === String(a.section_id) ||
                 cleanSecName(ct.section_name) === cleanSecName(a.section_name)
@@ -322,7 +316,7 @@ export default function Classes() {
 
     // For Admin / Deans:
     // 1. Try academic year endpoint if specific session selected
-    if (selectedAcademicYearId && selectedAcademicYearId !== 'ay_active') {
+    if (isNumericId(selectedAcademicYearId)) {
       try {
         const res = await fetch(`${API_BASE_URL}/api/academic-years/${selectedAcademicYearId}/classes`);
         if (res.ok) {
@@ -455,6 +449,13 @@ export default function Classes() {
       return;
     }
 
+    if (!isNumericId(selectedAcademicYearId)) {
+      const msg = 'Invalid academic session selected. Please choose a valid session and try again.';
+      setCreateClassError(msg);
+      alert(msg);
+      return;
+    }
+
     setIsCreating(true);
 
     try {
@@ -475,19 +476,6 @@ export default function Classes() {
           sections: sectionsList.map(s => ({ section_name: s, strength: 35 }))
         })
       });
-
-      if (!res.ok && res.status === 404) {
-        res = await fetch(`${API_BASE_URL}/api/classes`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            name,
-            class_order: Number(newClassOrder) || 10,
-            section: sectionsList[0] || 'A',
-            initial_sections: sectionsList
-          })
-        });
-      }
 
       const data = await res.json().catch(() => ({}));
       if (res.ok || data.success || data.status === 'success') {

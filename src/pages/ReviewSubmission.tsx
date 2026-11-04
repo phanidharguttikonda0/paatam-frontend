@@ -70,78 +70,158 @@ export default function ReviewSubmission() {
   };
 
   useEffect(() => {
-    fetch(`${API_BASE_URL}/api/submissions`).then((res) => res.json()).then((data) => {
-      const found = data.submissions?.find((item: any) => item.id === id) || data.submissions?.[0];
-      if (!found) return;
-      const evaluations = found.aiEvaluation?.questionEvaluations || [];
-      const assigned = found.assignment?.questions || [];
-      const source = assigned.length > 0 ? assigned : (evaluations.length > 0 ? evaluations : [
-        { questionNo: 'Q1', text: 'Sentence matching task: Match the sentence with the appropriate visual image F.', correctAnswer: 'F', studentAnswerSnippet: 'F', marks: 5, scorePercent: 100, earnedMarks: 5, status: 'Correct!', reasoning: 'The student correctly matched the sentence with image F (leer a la sombra de un árbol).' },
-        { questionNo: 'Q2', text: 'Select correct option (a) Elena David a cocinar en la barbacoa.', correctAnswer: 'D', studentAnswerSnippet: 'E', marks: 5, scorePercent: 0, earnedMarks: 0, status: 'Incorrect', reasoning: 'Selected E instead of benchmark D.' },
-        { questionNo: 'Q3', text: 'Select correct option (b) Elena va a jugar fútbol con sus amigos.', correctAnswer: 'E', studentAnswerSnippet: 'E', marks: 7, scorePercent: 0, earnedMarks: 0, status: 'Incorrect', reasoning: 'Option matching error.' },
-        { questionNo: 'Q4', text: 'Select correct option (c) Elena va a leer en una mecedora.', correctAnswer: 'B', studentAnswerSnippet: 'B', marks: 8, scorePercent: 0, earnedMarks: 0, status: 'Incorrect', reasoning: 'Answer key discrepancy.' },
-        { questionNo: 'Q5', text: 'Select correct option (d) Elena va a leer una historieta.', correctAnswer: 'F', studentAnswerSnippet: 'F', marks: 10, scorePercent: 0, earnedMarks: 0, status: 'Incorrect', reasoning: 'Incomplete response.' },
-        { questionNo: 'Q6', text: 'Select correct option (e) Elena va a bañarse en la piscina.', correctAnswer: 'A', studentAnswerSnippet: 'A', marks: 10, scorePercent: 0, earnedMarks: 0, status: 'Incorrect', reasoning: 'Needs teacher review.' }
-      ]);
-      setSubmission(found);
-      setFeedback(found.finalFeedback || found.aiEvaluation?.feedback || '');
-      setHint(found.finalHint || found.aiEvaluation?.socraticHint || '');
-      setApproved(found.status === 'approved');
-      setQuestions(source.map((question: any, index: number) => {
-        const evaluation = evaluations[index] || evaluations.find((item: any) => item.questionNo === question.questionNo) || {};
-        const marks = marksOf(question);
-        const scorePercent = Number(evaluation.scorePercent ?? (index === 0 ? 100 : 0));
-        const number = String(question.number || index + 1);
-        const partLabel = String(question.partLabel || '');
-        const qText = question.text || evaluation.questionText || `Question ${index + 1}`;
-        const studentAns = evaluation.studentAnswerSnippet || (index === 0 ? 'F' : 'F');
-        const bKey = question.correctAnswer || question.rubricKey || evaluation.benchmarkKey || 'F';
-        
-        const rawReasoning = typeof evaluation.reasoning === 'string' ? evaluation.reasoning.trim() : '';
-        const isGeneric = !rawReasoning || /^(?:correct\s+answers?\s+extracted(\s+from(\s+the)?\s+student'?s?\s+paper)?|the\s+response\s+was\s+compared\s+with\s+the\s+assigned\s+benchmark\s+key|correct\s+response|correct\s+answer)\.?$/i.test(rawReasoning);
-        
-        let finalReasoning = rawReasoning;
-        if (isGeneric) {
-          const clean = (studentAns || '').replace(/\s+/g, ' ').trim();
-          const lQ = qText.toLowerCase();
-          const lS = clean.toLowerCase();
-          if (scorePercent === 0) {
-            finalReasoning = (!clean || clean === 'No answer detected in the scanned paper.' || clean === 'No answer written (blank box)')
-              ? 'No handwritten response matching this question was detected on the answer sheet.'
-              : 'Student response did not match the benchmark requirement.';
-          } else if (scorePercent < 90) {
-            finalReasoning = 'Partial credit awarded: response contains relevant points but is incomplete compared to the benchmark key.';
-          } else if (/प्रार्थना|आवेदन|छुट्टी|मुख्याध्यापक|पत्र|letter|application|salutation/i.test(lQ) || /सेवा\s*में|महोदय|सविनय\s*निवेदन|respec|dear\s+sir|to\s+the\s+principal/i.test(lS)) {
-            finalReasoning = 'The student correctly followed the formal letter format: addressed the headmaster/principal with proper salutation, clearly stated the reason for leave, and concluded politely as required by the benchmark.';
-          } else if (/निबंध|अनुच्छेद|essay|composition|paragraph/i.test(lQ) || clean.split(' ').length >= 30) {
-            finalReasoning = 'The student wrote a comprehensive and well-structured response covering the topic, key themes, and required details in accordance with the benchmark criteria.';
-          } else if (/^[a-d]\b|^[1-4]\b|^[ivx]+\b/i.test(clean) && clean.length <= 4) {
-            finalReasoning = `The student correctly selected Option ${clean.toUpperCase().trim()}, which matches the benchmark key.`;
-          } else if (clean.split(' ').filter(Boolean).length >= 1 && clean.split(' ').filter(Boolean).length <= 6 && clean.length <= 60) {
-            finalReasoning = `The student correctly identified '${clean}', which directly satisfies the benchmark requirement.`;
-          } else {
-            finalReasoning = 'The student accurately answered the question, addressing all essential points specified in the benchmark key.';
+    const loadSubmission = async () => {
+      try {
+        let found: any = null;
+        if (id) {
+          const directRes = await fetch(`${API_BASE_URL}/api/submissions/${id}`);
+          if (directRes.ok) {
+            const directData = await directRes.json();
+            // API_DOCS: response is { status, data: { id, assignment_id, student, ... } }
+            found = directData.data || directData.submission || directData;
+            // Reject if the found object doesn't match our ID (guard against wrong record)
+            if (found && found.id && String(found.id) !== String(id)) {
+              found = null;
+            }
           }
         }
+        if (!found) {
+          // Fallback: search global queue filtered by this id
+          const res = await fetch(`${API_BASE_URL}/api/submissions`);
+          const data = await res.json();
+          const all = Array.isArray(data?.data) ? data.data : (Array.isArray(data?.submissions) ? data.submissions : []);
+          found = all.find((item: any) => String(item.id || item.submission_id || '') === String(id)) || null;
+        }
+        if (!found) return;
 
-        return {
-          questionNo: question.questionNo || question.number || `Q${index + 1}`,
-          number,
-          partLabel,
-          stem: question.stem || '',
-          stimulus: Array.isArray(question.stimulus) ? question.stimulus : [],
-          section: question.section || question.part || question.sectionName || evaluation.section || 'Questions',
-          questionText: qText,
-          benchmarkKey: bKey,
-          studentAnswerSnippet: studentAns,
-          scorePercent, marks,
-          earnedMarks: Number.isFinite(Number(evaluation.earnedMarks)) ? Number(evaluation.earnedMarks) : (index === 0 ? 1 : 0),
-          status: evaluation.status || (index === 0 ? 'Correct!' : 'Incorrect'),
-          reasoning: finalReasoning,
-          feedback: evaluation.feedback || finalReasoning || ''
+        // If we have an assignment_id but no assignment embedded, fetch assignment details
+        // API_DOCS: GET /api/assignments/:id returns title, class_subject.subject_name, question_paper_url, answer_key_url
+        let assignmentData: any = found.assignment || null;
+        const assignmentId = found.assignment_id || found.assignmentId;
+        if (!assignmentData && assignmentId) {
+          try {
+            const aRes = await fetch(`${API_BASE_URL}/api/assignments/${assignmentId}`);
+            if (aRes.ok) {
+              const aJson = await aRes.json();
+              assignmentData = aJson.data || aJson.assignment || null;
+            }
+          } catch { /* non-critical */ }
+        }
+
+        // API_DOCS: GET /api/submissions/:id returns question_breakdown[] and student{name, roll_no}
+        // Normalize to our expected format
+        const breakdown: any[] = found.question_breakdown || found.questionBreakdown || [];
+        // Also check for legacy aiEvaluation.questionEvaluations (old format)
+        const legacyEvals: any[] = found.aiEvaluation?.questionEvaluations || [];
+        const evaluations = breakdown.length > 0 ? breakdown : legacyEvals;
+
+        // Student name: API uses found.student.name (teacher view) or found.student_name (list view)
+        const normalizedStudent = {
+          name: found.student?.name || found.student_name || found.studentName || 'Unknown Student',
+          rollNo: found.student?.roll_no || found.roll_no || found.rollNumber || found.rollNo || '',
         };
-      }));
-    }).catch(console.error).finally(() => setLoading(false));
+
+        // Questions come from the assignment object embedded in the submission,
+        // or we fall back to the question_breakdown fields themselves as source
+        const assignedQuestions: any[] = found.assignment?.questions || found.assignment?.questions_json || [];
+
+        // Build question source: prefer real assignment questions, else derive from breakdown
+        const source = assignedQuestions.length > 0
+          ? assignedQuestions
+          : evaluations.length > 0
+            ? evaluations
+            : [];
+
+        setSubmission({
+          ...found,
+          // Normalize student info so the render code can access it uniformly
+          studentName: normalizedStudent.name,
+          rollNumber: normalizedStudent.rollNo,
+          // Attach fetched assignment data for title / subject / paper URLs
+          assignment: assignmentData || found.assignment,
+          // Also store list-view fields that may be present if loaded from queue
+          assignment_title: found.assignment_title || assignmentData?.title || found.assignmentTitle,
+          subject_name: found.subject_name || assignmentData?.class_subject?.subject_name || found.subjectName,
+        });
+        setFeedback(found.final_feedback || found.finalFeedback || found.feedback || found.aiEvaluation?.feedback || '');
+        setHint(found.final_hint || found.finalHint || found.socratic_hint || found.aiEvaluation?.socraticHint || '');
+        setApproved(found.status === 'approved');
+
+        setQuestions(source.map((question: any, index: number) => {
+          // Map question_breakdown fields to our ReviewQuestion shape
+          // API_DOCS breakdown item: { question_number, marks_awarded, max_marks, verdict, student_answer, ai_explanation }
+          // Legacy eval item: { questionNo, scorePercent, earnedMarks, studentAnswerSnippet, benchmarkKey, reasoning }
+          const breakdownItem = evaluations.find((e: any) =>
+            String(e.question_number || e.questionNo || (index + 1)) === String(question.question_number || question.questionNo || question.number || (index + 1))
+          ) || evaluations[index] || {};
+
+          const marks = marksOf({ marks: question.marks ?? question.max_marks ?? breakdownItem.max_marks });
+          const earnedRaw = breakdownItem.marks_awarded ?? breakdownItem.earnedMarks ?? null;
+          const earnedMarks = Number.isFinite(Number(earnedRaw)) ? Number(earnedRaw) : 0;
+          const scorePercent = marks > 0 ? Math.round((earnedMarks / marks) * 100) : Number(breakdownItem.scorePercent ?? 0);
+
+          const number = String(question.question_number || question.number || index + 1);
+          const partLabel = String(question.partLabel || '');
+          const qText = question.question || question.text || breakdownItem.questionText || `Question ${index + 1}`;
+          const studentAns = breakdownItem.student_answer || breakdownItem.studentAnswerSnippet || '';
+          const bKey = question.correct_answer || question.correctAnswer || question.rubricKey || breakdownItem.benchmarkKey || '';
+
+          const verdict = breakdownItem.verdict || '';
+          const aiExplanation = breakdownItem.ai_explanation || breakdownItem.reasoning || '';
+
+          const rawReasoning = typeof aiExplanation === 'string' ? aiExplanation.trim() : '';
+          const isGeneric = !rawReasoning || /^(?:correct\s+answers?\s+extracted(\s+from(\s+the)?\s+student'?s?\s+paper)?|the\s+response\s+was\s+compared\s+with\s+the\s+assigned\s+benchmark\s+key|correct\s+response|correct\s+answer)\.?$/i.test(rawReasoning);
+
+          let finalReasoning = rawReasoning;
+          if (isGeneric) {
+            const clean = (studentAns || '').replace(/\s+/g, ' ').trim();
+            const lQ = qText.toLowerCase();
+            const lS = clean.toLowerCase();
+            if (scorePercent === 0) {
+              finalReasoning = (!clean || clean === 'No answer detected in the scanned paper.' || clean === 'No answer written (blank box)')
+                ? 'No handwritten response matching this question was detected on the answer sheet.'
+                : 'Student response did not match the benchmark requirement.';
+            } else if (scorePercent < 90) {
+              finalReasoning = 'Partial credit awarded: response contains relevant points but is incomplete compared to the benchmark key.';
+            } else if (/प्रार्थना|आवेदन|छुट्टी|मुख्याध्यापक|पत्र|letter|application|salutation/i.test(lQ) || /सेवा\s*में|महोदय|सविनय\s*निवेदन|respec|dear\s+sir|to\s+the\s+principal/i.test(lS)) {
+              finalReasoning = 'The student correctly followed the formal letter format: addressed the headmaster/principal with proper salutation, clearly stated the reason for leave, and concluded politely as required by the benchmark.';
+            } else if (/निबंध|अनुच्छेद|essay|composition|paragraph/i.test(lQ) || clean.split(' ').length >= 30) {
+              finalReasoning = 'The student wrote a comprehensive and well-structured response covering the topic, key themes, and required details in accordance with the benchmark criteria.';
+            } else if (/^[a-d]\b|^[1-4]\b|^[ivx]+\b/i.test(clean) && clean.length <= 4) {
+              finalReasoning = `The student correctly selected Option ${clean.toUpperCase().trim()}, which matches the benchmark key.`;
+            } else if (clean.split(' ').filter(Boolean).length >= 1 && clean.split(' ').filter(Boolean).length <= 6 && clean.length <= 60) {
+              finalReasoning = clean ? `The student correctly identified '${clean}', which directly satisfies the benchmark requirement.` : 'The student accurately answered the question.';
+            } else if (verdict === 'correct') {
+              finalReasoning = 'The student accurately answered the question, addressing all essential points specified in the benchmark key.';
+            } else {
+              finalReasoning = 'Student response did not fully satisfy the benchmark requirement.';
+            }
+          }
+
+          return {
+            questionNo: question.questionNo || question.number || question.question_number || `Q${index + 1}`,
+            number,
+            partLabel,
+            stem: question.stem || '',
+            stimulus: Array.isArray(question.stimulus) ? question.stimulus : [],
+            section: question.section || question.part || question.sectionName || breakdownItem.section || 'Questions',
+            questionText: qText,
+            benchmarkKey: bKey,
+            studentAnswerSnippet: studentAns,
+            scorePercent, marks,
+            earnedMarks,
+            status: verdict === 'correct' ? 'Correct!' : verdict === 'partial' ? 'Partial' : breakdownItem.status || (scorePercent >= 90 ? 'Correct!' : scorePercent > 0 ? 'Partial' : 'Incorrect'),
+            reasoning: finalReasoning,
+            feedback: breakdownItem.feedback || finalReasoning || ''
+          };
+        }));
+      } catch (err) {
+        console.error('Error loading submission details:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadSubmission();
   }, [id]);
 
   const studentPaperPdfUrl = useMemo<string>(() => {
@@ -153,16 +233,37 @@ export default function ReviewSubmission() {
 
   const answerKeyPdfUrl = useMemo<string>(() => {
     if (!submission) return '';
-    return submission.assignment?.answerKeyUrl || submission.answerKeyUrl || submission.assignment?.pdfUrl || '';
+    return (
+      submission.assignment?.answer_key_url ||
+      submission.assignment?.answerKeyUrl ||
+      submission.answerKeyUrl ||
+      submission.answer_key_url ||
+      submission.assignment?.pdfUrl ||
+      ''
+    );
   }, [submission]);
 
   const questionPaperPdfUrl = useMemo<string>(() => {
     if (!submission) return '';
-    return submission.assignment?.pdfUrl || submission.questionPaperUrl || submission.question_paper_url || '';
+    return (
+      submission.assignment?.question_paper_url ||
+      submission.assignment?.pdfUrl ||
+      submission.questionPaperUrl ||
+      submission.question_paper_url ||
+      ''
+    );
   }, [submission]);
 
-  const totalMarks = useMemo(() => questions.reduce((sum, q) => sum + (q.marks || 0), 0), [questions]);
-  const totalEarned = useMemo(() => questions.reduce((sum, q) => sum + q.earnedMarks, 0), [questions]);
+  const totalMarks = useMemo(() => {
+    const fromQ = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
+    // Fall back to API top-level max_score if question_breakdown is empty
+    return fromQ > 0 ? fromQ : (submission?.max_score || 0);
+  }, [questions, submission]);
+  const totalEarned = useMemo(() => {
+    const fromQ = questions.reduce((sum, q) => sum + q.earnedMarks, 0);
+    // Fall back to API top-level score if question_breakdown is empty
+    return fromQ > 0 ? fromQ : (submission?.score || 0);
+  }, [questions, submission]);
   const totalPercent = useMemo(() => totalMarks > 0 ? Math.round((totalEarned / totalMarks) * 100) : 0, [totalEarned, totalMarks]);
 
   const current = questions[selectedIndex];
@@ -193,13 +294,15 @@ export default function ReviewSubmission() {
     // Documented API: POST /api/submissions/:id/override
     if (submission?.id) {
       const qNum = Number(current.questionNo?.replace(/\D/g, '')) || selectedIndex + 1;
+      const calculatedTotal = questions.reduce((sum, q, idx) => sum + (idx === selectedIndex ? bounded : q.earnedMarks), 0);
       fetch(`${API_BASE_URL}/api/submissions/${submission.id}/override`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          score: Math.round(calculatedTotal * 10) / 10,
+          feedback: current.feedback || current.reasoning || `Manual mark override on Q${qNum}`,
           question_number: qNum,
-          assigned_marks: bounded,
-          feedback: current.feedback || current.reasoning
+          assigned_marks: bounded
         })
       }).catch(() => {});
     }
@@ -208,13 +311,17 @@ export default function ReviewSubmission() {
   const approve = async () => {
     if (!submission) return;
     try {
+      const finalScoreNum = Math.round(totalEarned * 100) / 100;
       const response = await fetch(`${API_BASE_URL}/api/submissions/${submission.id}/approve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          feedback,
+          final_score: finalScoreNum,
+          final_feedback: feedback || 'Evaluation approved by teacher.',
+          // Backward compatibility fields
+          score: finalScoreNum,
+          feedback: feedback || 'Evaluation approved by teacher.',
           socraticHint: hint,
-          score: Math.round(totalEarned * 100) / 100,
           questionEvaluations: questions
         })
       });
@@ -234,11 +341,14 @@ export default function ReviewSubmission() {
   if (loading) return <div style={{ padding: '3rem', textAlign: 'center', color: '#64748B' }}>Loading review workspace...</div>;
   if (!submission) return <div style={{ padding: '3rem', textAlign: 'center' }}><h2>Submission not found</h2><Link to="/submissions" className="btn btn-primary" style={{ marginTop: '1rem', display: 'inline-block' }}>Back to queue</Link></div>;
 
-  const studentName = submission.studentName || 'Student 42';
-  const rollNumber = submission.rollNumber || '02';
-  const examTitle = submission.assignment?.title || submission.subject || 'Mid Term Examination';
-  const paperTitle = submission.paperTitle || 'Paper 2 Reading';
-  const dateStr = submission.createdAt ? new Date(submission.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '15 Sep 2025';
+  const studentName = submission.studentName || submission.student_name || 'Unknown Student';
+  const rollNumber = submission.rollNumber || submission.student?.roll_no || submission.roll_no || '';
+  // API list view: assignment_title / subject_name; detail view: assignment.title / assignment.class_subject.subject_name
+  const examTitle = submission.assignment_title || submission.assignment?.title || submission.subject_name || submission.subject || '';
+  const paperTitle = submission.assignment_title || submission.assignment?.title || '';
+  // API uses submitted_at (snake_case), not createdAt
+  const rawDate = submission.submitted_at || submission.createdAt || submission.submittedAt || submission.created_at;
+  const dateStr = rawDate ? new Date(rawDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
 
   const filteredQuestions = questions.filter((q) => {
     if (questionFilter === 'Needs Review') return q.scorePercent < 90;
@@ -257,10 +367,9 @@ export default function ReviewSubmission() {
           <div className="result-student-info">
             <h1 className="result-student-title">{studentName}</h1>
             <div className="result-meta-chips">
-              <span className="meta-chip">Roll No: {rollNumber}</span>
-              <span className="meta-chip">{examTitle}</span>
-              <span className="meta-chip">{paperTitle}</span>
-              <span className="meta-chip">Date: {dateStr}</span>
+              {rollNumber && <span className="meta-chip">Roll No: {rollNumber}</span>}
+              {examTitle && <span className="meta-chip">{examTitle}</span>}
+              {dateStr && <span className="meta-chip">Date: {dateStr}</span>}
             </div>
           </div>
         </div>

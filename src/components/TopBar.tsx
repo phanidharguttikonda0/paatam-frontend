@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { checkSystemHealth, API_BASE_URL } from '../config/api';
+import schoolLogo from '../assets/school_logo.png';
 
 export default function TopBar() {
   const navigate = useNavigate();
@@ -154,25 +155,51 @@ export default function TopBar() {
 
   return (
     <header className="app-topbar no-print">
-      {/* Left: Search input */}
-      <form onSubmit={handleSearchSubmit} className="topbar-search-form">
-        <div className="topbar-search-wrapper">
-          <Search className="topbar-search-icon" size={17} />
-          <input
-            type="text"
-            className="topbar-search-input"
-            placeholder={
-              role === 'CORPORATE_ADMIN' || role === 'SUPER_ADMIN'
-                ? 'Search campuses, faculty, or classes...'
-                : role === 'STUDENT'
-                ? 'Search my test papers...'
-                : 'Search students, papers, or classes...'
-            }
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
+      {/* Left: School Institutional Branding & Global Search */}
+      <div className="topbar-left-group">
+        <div
+          className="topbar-school-branding"
+          onClick={() => navigate('/')}
+          title="Bellwether International School - Academic Operations"
+        >
+          <div className="topbar-school-logo-frame">
+            <img
+              src={schoolLogo}
+              alt="Bellwether International School Logo"
+              className="topbar-school-logo-img"
+            />
+          </div>
+          <div className="topbar-school-details">
+            <h2 className="topbar-school-title">Bellwether International School</h2>
+            <div className="topbar-school-subtitle">
+              <span className="topbar-school-tag">Academic Campus</span>
+              <span className="topbar-school-dot">•</span>
+              <span className="topbar-school-year">Session 2026-27</span>
+            </div>
+          </div>
         </div>
-      </form>
+
+        <div className="topbar-vertical-divider" />
+
+        <form onSubmit={handleSearchSubmit} className="topbar-search-form">
+          <div className="topbar-search-wrapper">
+            <Search className="topbar-search-icon" size={17} />
+            <input
+              type="text"
+              className="topbar-search-input"
+              placeholder={
+                role === 'CORPORATE_ADMIN' || role === 'SUPER_ADMIN'
+                  ? 'Search campuses, faculty, or classes...'
+                  : role === 'STUDENT'
+                  ? 'Search my test papers...'
+                  : 'Search students, papers, or classes...'
+              }
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
+        </form>
+      </div>
 
       {/* Right: Notification Bell & User Profile */}
       <div className="topbar-right-group">

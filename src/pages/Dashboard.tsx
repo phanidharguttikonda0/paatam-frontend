@@ -60,9 +60,10 @@ export default function Dashboard() {
     try {
       const res = await fetch(`${API_BASE_URL}/api/submissions`);
       const data = await res.json();
-      if (data.success) {
-        setSubmissions(data.submissions || []);
-      }
+      const list = Array.isArray(data.data)
+        ? data.data
+        : (Array.isArray(data.submissions) ? data.submissions : []);
+      setSubmissions(list);
     } catch (err) {
       console.error('Fetch submissions error:', err);
     }
@@ -123,24 +124,32 @@ export default function Dashboard() {
   const handleGenerateQuestions = async () => {
     setIsGenerating(true);
     try {
-      const formData = new FormData();
-      formData.append('className', className);
-      formData.append('topic', assignmentTitle || 'General Chapter');
-      formData.append('subjectLanguage', subjectLanguage);
       const countVal = numQuestions && !isNaN(parseInt(numQuestions, 10)) ? parseInt(numQuestions, 10) : 5;
-      formData.append('numQuestions', countVal.toString());
-      if (subTopicScope) formData.append('subTopicScope', subTopicScope);
-      if (uploadedFiles.length > 0) {
-        uploadedFiles.forEach((file) => formData.append('documents', file));
-      }
-
-      const res = await fetch(`${API_BASE_URL}/api/rag/generate`, {
+      const res = await fetch(`${API_BASE_URL}/api/assignments/generate`, {
         method: 'POST',
-        body: formData
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          class_subject_id: localStorage.getItem('paatam_active_class_subject_id') || '1001',
+          exam_title: assignmentTitle || 'Generated Assessment',
+          target_marks: Math.max(10, countVal * 2),
+          language: subjectLanguage || 'English',
+          difficulty: 'Medium',
+          chapter_titles: [assignmentTitle || 'General Chapter'],
+          subtopics: subTopicScope ? [subTopicScope] : [],
+          question_counts: {
+            mcqCount: countVal,
+            veryShortCount: 0,
+            shortCount: 0,
+            descriptiveCount: 0
+          }
+        })
       });
       const data = await res.json();
-      if (data.success) {
-        setQuestions(data.questions);
+      const generated = Array.isArray(data.data?.questions)
+        ? data.data.questions
+        : (Array.isArray(data.questions) ? data.questions : []);
+      if (generated.length > 0) {
+        setQuestions(generated);
       }
     } catch (err) {
       console.error(err);
@@ -158,22 +167,27 @@ export default function Dashboard() {
     setIsIngesting(true);
     setIngestStatus(null);
     try {
-      const formData = new FormData();
-      formData.append('className', className || 'Grade 11');
-      formData.append('topic', assignmentTitle || 'General Chapter');
-      uploadedFiles.forEach((file) => formData.append('documents', file));
-
-      const res = await fetch(`${API_BASE_URL}/api/rag/ingest`, {
-        method: 'POST',
-        body: formData
-      });
-      const data = await res.json();
-      if (data.success) {
-        setIngestStatus(data.message);
-        alert(`✅ Knowledge Base Ingested Successfully!\n${data.message}`);
-      } else {
-        alert(`⚠️ Ingestion failed: ${data.message}`);
+      const classSubjectId = localStorage.getItem('paatam_active_class_subject_id') || '1001';
+      let successCount = 0;
+      for (const file of uploadedFiles) {
+        const chapterTitle = file.name.replace(/\.pdf$/i, '');
+        const payload: Record<string, any> = {
+          class_subject_id: classSubjectId,
+          chapter_title: chapterTitle,
+          chapter_number: 1,
+          chapter_text: `Ingested from ${chapterTitle}`,
+          file_name: file.name
+        };
+        const res = await fetch(`${API_BASE_URL}/api/curriculum/chapters/ingest`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (res.ok) successCount += 1;
       }
+      const msg = `Ingested ${successCount}/${uploadedFiles.length} chapter file(s).`;
+      setIngestStatus(msg);
+      alert(`✅ ${msg}`);
     } catch (err) {
       console.error('Ingest error:', err);
       alert('⚠️ Error ingesting knowledge base.');
@@ -189,21 +203,62 @@ export default function Dashboard() {
     setIsExtractingPhoto(true);
 
     try {
-      const formData = new FormData();
-      files.forEach(f => formData.append('questionPaper', f));
-      formData.append('subjectLanguage', subjectLanguage);
-      formData.append('className', className);
+      const classSubjectId = localStorage.getItem('paatam_active_class_subject_id') || '1101';
+      const teacherSubjectId = localStorage.getItem('paatam_active_teacher_subject_id') || '1201';
+      const sectionId = localStorage.getItem('paatam_active_section_id') || '701';
+      let extractedCount = 0;
 
-      const res = await fetch(`${API_BASE_URL}/api/rag/extract-questions-from-image`, {
-        method: 'POST',
-        body: formData
-      });
-      const data = await res.json();
-      if (data.success && Array.isArray(data.questions) && data.questions.length > 0) {
-        setQuestions(prev => [...prev, ...data.questions]);
-        alert(`✅ Vision AI extracted ${data.questions.length} question(s) from photo!`);
+      for (const file of files) {
+        const uploadRes = await fetch(`${API_BASE_URL}/api/assignments/upload-urls`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            section_id: sectionId,
+            files: [
+              {
+                file_name: file.name,
+                file_type: file.type || 'image/jpeg',
+                purpose: 'question_paper'
+              }
+            ]
+          })
+        });
+        const uploadData = await uploadRes.json().catch(() => ({}));
+        const item = uploadData.data?.uploads?.[0];
+        if (!item?.upload_url || !item?.file_url) continue;
+
+        await fetch(item.upload_url, {
+          method: 'PUT',
+          headers: { 'Content-Type': file.type || 'image/jpeg' },
+          body: file
+        });
+
+        const createRes = await fetch(`${API_BASE_URL}/api/assignments/create-sync`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            section_id: sectionId,
+            class_subject_id: classSubjectId,
+            teacher_subject_id: teacherSubjectId,
+            title: `Photo Extract ${Date.now()}`,
+            duration_minutes: 30,
+            question_paper_url: item.file_url
+          })
+        });
+        const createData = await createRes.json().catch(() => ({}));
+        const qs = Array.isArray(createData.data?.questions_json)
+          ? createData.data.questions_json
+          : [];
+        if (qs.length > 0) {
+          extractedCount += qs.length;
+          setQuestions(prev => [...prev, ...qs]);
+        }
+      }
+
+      if (extractedCount > 0) {
+        alert(`✅ Extracted ${extractedCount} question(s) from uploaded photo(s).`);
       } else {
-        alert('⚠️ Could not extract questions from photo.');
+        alert('⚠️ Could not extract questions from photo(s).');
       }
     } catch (err) {
       console.error('Photo question upload error:', err);
@@ -223,6 +278,8 @@ export default function Dashboard() {
         body: JSON.stringify({
           title: assignmentTitle || 'Daily Learning Assignment',
           className,
+          submission_mode: 'STUDENT_UPLOAD',
+          status: 'published',
           questions
         })
       });
@@ -236,13 +293,19 @@ export default function Dashboard() {
     }
   };
 
-  // Approval from Review Modal
+  // Approval from Review Modal (Part 5: POST /api/submissions/:id/approve)
   const handleApprove = async (id: string, feedback: string, socraticHint: string, score: number) => {
     try {
       const res = await fetch(`${API_BASE_URL}/api/submissions/${id}/approve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ feedback, socraticHint, score })
+        body: JSON.stringify({
+          final_score: score,
+          final_feedback: feedback,
+          feedback,
+          socraticHint,
+          score
+        })
       });
       const data = await res.json();
       if (data.success) {

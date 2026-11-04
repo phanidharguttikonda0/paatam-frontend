@@ -163,9 +163,7 @@ export default function Teachers() {
         } catch {}
         setSubjects(deduplicated);
       } else {
-        const fbRes = await fetch(`${API_BASE_URL}/api/subjects`);
-        const fbData = await fbRes.json().catch(() => ({}));
-        setSubjects(Array.isArray(fbData.data) ? fbData.data : (fbData.subjects || (Array.isArray(fbData) ? fbData : [])));
+        setSubjects([]);
       }
     } catch {
       setSubjects([]);
@@ -699,9 +697,13 @@ export default function Teachers() {
           alert(data.message || 'Failed to update subject.');
         }
       } else {
-        const url = branchId
-          ? `${API_BASE_URL}/api/branch/${branchId}/subjects`
-          : `${API_BASE_URL}/api/subjects`;
+        if (!branchId) {
+          alert('Branch context is required to create a subject.');
+          setIsSubmittingSubject(false);
+          return;
+        }
+
+        const url = `${API_BASE_URL}/api/branch/${branchId}/subjects`;
 
         const res = await fetch(url, {
           method: 'POST',

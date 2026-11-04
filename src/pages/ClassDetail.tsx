@@ -141,20 +141,6 @@ export default function ClassDetail() {
       }
     } catch {}
 
-    // Fallback: list search
-    fetch(`${API_BASE_URL}/api/classes`)
-      .then((res) => res.json())
-      .then((data) => {
-        const list = Array.isArray(data.data) ? data.data : (Array.isArray(data.classes) ? data.classes : []);
-        const match = list.find((c: any) => c.id === classId);
-        if (match) {
-          setClassName(match.name || match.class_name);
-          if (match.branch_id) {
-            setClassBranchId(match.branch_id);
-          }
-        }
-      })
-      .catch(() => {});
   };
 
   const fetchSubjects = () => {
@@ -182,9 +168,12 @@ export default function ClassDetail() {
   };
 
   const fetchMasterCatalog = async () => {
-    const url = activeBranchId
-      ? `${API_BASE_URL}/api/branch/${activeBranchId}/subjects`
-      : `${API_BASE_URL}/api/subjects`;
+    if (!activeBranchId) {
+      setMasterCatalog([]);
+      return;
+    }
+
+    const url = `${API_BASE_URL}/api/branch/${activeBranchId}/subjects`;
 
     try {
       const res = await fetch(url);
@@ -200,25 +189,10 @@ export default function ClassDetail() {
       if (list && Array.isArray(list)) {
         setMasterCatalog(list);
       } else {
-        const fbRes = await fetch(`${API_BASE_URL}/api/subjects`);
-        const fbData = await fbRes.json();
-        const fbList = Array.isArray(fbData.data)
-          ? fbData.data
-          : Array.isArray(fbData.subjects)
-          ? fbData.subjects
-          : Array.isArray(fbData)
-          ? fbData
-          : [];
-        setMasterCatalog(fbList);
+        setMasterCatalog([]);
       }
     } catch {
-      fetch(`${API_BASE_URL}/api/subjects`)
-        .then((r) => r.json())
-        .then((d) => {
-          const fbList = Array.isArray(d.data) ? d.data : Array.isArray(d.subjects) ? d.subjects : [];
-          setMasterCatalog(fbList);
-        })
-        .catch(() => {});
+      setMasterCatalog([]);
     }
   };
 
@@ -237,46 +211,52 @@ export default function ClassDetail() {
 
         if (isTeacher) {
           const teacherId = String(currentUser?.id || (currentUser as any)?.teacher_id || (currentUser as any)?.staff_id || '');
-          const teacherName = (currentUser?.name || '').toLowerCase();
-          const explicitSectionIds = new Set<string>();
-          const explicitSectionNames = new Set<string>();
+          const allowedSectionIds = new Set<string>();
+          const allowedSectionNames = new Set<string>();
 
-          for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
-            if (key && (key.startsWith('paatam_section_allocations_') || key.startsWith('paatam_section_allocations_name_'))) {
-              const sId = key.replace(/^paatam_section_allocations_(name_)?/, '');
-              try {
-                const raw = localStorage.getItem(key);
-                if (raw) {
-                  const items = JSON.parse(raw);
-                  if (Array.isArray(items)) {
-                    for (const alloc of items) {
-                      const matchesTeacher =
-                        String(alloc.teacher_id) === teacherId ||
-                        String(alloc.teacher?.id) === teacherId ||
-                        String(alloc.teacher?.teacher_id) === teacherId ||
-                        (teacherId && (String(alloc.teacher_id).includes(teacherId) || teacherId.includes(String(alloc.teacher_id)))) ||
-                        (teacherName && alloc.teacher?.name && alloc.teacher.name.toLowerCase().includes(teacherName)) ||
-                        (teacherName && alloc.teacher_name && alloc.teacher_name.toLowerCase().includes(teacherName));
-                      if (matchesTeacher) {
-                        explicitSectionIds.add(String(sId));
-                        if (alloc.section_name) {
-                          explicitSectionNames.add(cleanSecName(alloc.section_name));
-                        }
-                      }
-                    }
+          try {
+            // Source of truth for teacher access scope
+            // comes from /api/teacher/dashboard.
+            fetch(`${API_BASE_URL}/api/teacher/dashboard`)
+              .then((res) => res.ok ? res.json() : null)
+              .then((dashData) => {
+                const allocations = Array.isArray(dashData?.data?.teaching_allocations)
+                  ? dashData.data.teaching_allocations
+                  : (Array.isArray(dashData?.data?.assigned_sections) ? dashData.data.assigned_sections : []);
+                const classTeacherSecs = Array.isArray(dashData?.data?.class_teacher_sections)
+                  ? dashData.data.class_teacher_sections
+                  : [];
+
+                for (const a of allocations) {
+                  if (String(a.class_id || '') === String(classId || '') || (className && String(a.class_name || '') === String(className))) {
+                    if (a.section_id) allowedSectionIds.add(String(a.section_id));
+                    if (a.section_name) allowedSectionNames.add(cleanSecName(a.section_name));
                   }
                 }
-              } catch {}
-            }
-          }
 
-          if (explicitSectionIds.size > 0 || explicitSectionNames.size > 0) {
-            list = list.filter((sec) =>
-              explicitSectionIds.has(String(sec.id)) ||
-              explicitSectionNames.has(cleanSecName(sec.section_name)) ||
-              String(sec.class_teacher_id) === teacherId
-            );
+                for (const ct of classTeacherSecs) {
+                  if (String(ct.class_id || '') === String(classId || '') || (className && String(ct.class_name || '') === String(className))) {
+                    if (ct.section_id) allowedSectionIds.add(String(ct.section_id));
+                    if (ct.section_name) allowedSectionNames.add(cleanSecName(ct.section_name));
+                  }
+                }
+
+                if (allowedSectionIds.size > 0 || allowedSectionNames.size > 0) {
+                  setSections(list.filter((sec) =>
+                    allowedSectionIds.has(String(sec.id)) ||
+                    allowedSectionNames.has(cleanSecName(sec.section_name)) ||
+                    String(sec.class_teacher_id) === teacherId
+                  ));
+                } else {
+                  setSections(list.filter((sec) => String(sec.class_teacher_id) === teacherId));
+                }
+              })
+              .catch(() => {
+                setSections(list.filter((sec) => String(sec.class_teacher_id) === teacherId));
+              });
+            return;
+          } catch {
+            list = list.filter((sec) => String(sec.class_teacher_id) === teacherId);
           }
         }
 
@@ -315,23 +295,6 @@ export default function ClassDetail() {
             ? data
             : [];
           fetchedList = [...fetchedList, ...list];
-        }
-      } catch {}
-    }
-
-    if (fetchedList.length === 0) {
-      try {
-        const r = await fetch(`${API_BASE_URL}/api/teachers`);
-        if (r.ok) {
-          const d = await r.json();
-          const list = Array.isArray(d.data)
-            ? d.data
-            : Array.isArray(d.teachers)
-            ? d.teachers
-            : Array.isArray(d)
-            ? d
-            : [];
-          fetchedList = list;
         }
       } catch {}
     }
@@ -385,53 +348,10 @@ export default function ClassDetail() {
       });
       let data = await res.json().catch(() => ({}));
 
-      // Fallback 1: try numeric subject_id if string failed and ID is numeric
-      if (!res.ok && data.status !== 'success' && !isNaN(Number(selectedMasterSubjectId))) {
-        const numRes = await fetch(`${API_BASE_URL}/api/classes/${classId}/subjects`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ subject_id: Number(selectedMasterSubjectId) })
-        });
-        const numData = await numRes.json().catch(() => ({}));
-        if (numRes.ok || numData.status === 'success' || numData.success) {
-          res = numRes;
-          data = numData;
-        }
-      }
-
-      // Fallback 2: try array payload { subject_ids: [...] } in case an alternate server version expects it
-      if (!res.ok && data.status !== 'success') {
-        const arrRes = await fetch(`${API_BASE_URL}/api/classes/${classId}/subjects`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ subject_ids: [selectedMasterSubjectId] })
-        });
-        const arrData = await arrRes.json().catch(() => ({}));
-        if (arrRes.ok || arrData.status === 'success' || arrData.success) {
-          res = arrRes;
-          data = arrData;
-        }
-      }
-
       if (res.ok || data.status === 'success' || data.success || data.data) {
         setSelectedMasterSubjectId('');
         fetchSubjects();
       } else {
-        // Fallback 3: legacy format { subjectName }
-        const matched = masterCatalog.find((m) => m.id === selectedMasterSubjectId);
-        if (matched) {
-          const fbRes = await fetch(`${API_BASE_URL}/api/classes/${classId}/subjects`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ subjectName: matched.name })
-          });
-          const fbData = await fbRes.json().catch(() => ({}));
-          if (fbRes.ok || fbData.status === 'success' || fbData.success) {
-            setSelectedMasterSubjectId('');
-            fetchSubjects();
-            return;
-          }
-        }
         alert(data.message || 'Unable to assign subject to class.');
       }
     } catch (err) {
@@ -466,20 +386,12 @@ export default function ClassDetail() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ subject_id: String(newSubjectId) })
         });
-        if (!assignRes.ok && !isNaN(Number(newSubjectId))) {
-          await fetch(`${API_BASE_URL}/api/classes/${classId}/subjects`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ subject_id: Number(newSubjectId) })
-          }).catch(() => {});
+        if (!assignRes.ok) {
+          const assignData = await assignRes.json().catch(() => ({}));
+          throw new Error(assignData.message || 'Failed to attach subject to class.');
         }
       } else {
-        // Legacy fallback
-        await fetch(`${API_BASE_URL}/api/classes/${classId}/subjects`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ subjectName: newMasterName.trim() })
-        });
+        throw new Error('Failed to create subject in branch catalog.');
       }
 
       setNewMasterName('');
@@ -546,24 +458,6 @@ export default function ClassDetail() {
         setNewClassTeacherId('');
         fetchSections();
       } else {
-        // Fallback to legacy structure
-        const fbRes = await fetch(`${API_BASE_URL}/api/classes/${classId}/sections`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sectionName,
-            classTeacherId: newClassTeacherId || null,
-            strength: Number(newSectionStrength) || 0
-          })
-        });
-        const fbData = await fbRes.json();
-        if (fbData.success) {
-          setNewSectionName('');
-          setNewSectionStrength(35);
-          setNewClassTeacherId('');
-          fetchSections();
-          return;
-        }
         alert(data.message || 'Unable to create section.');
       }
     } catch (err) {
@@ -651,11 +545,58 @@ export default function ClassDetail() {
     return hasTeacherId || hasTeacherObjId || hasTeacherName || hasTeacherIdProp || hasAssignedTeacher;
   };
 
-  // Open faculty allocations modal for section: GET /api/sections/:sectionId/subjects-teachers
+  // Open faculty allocations modal for section: load backend authoritative allocations first
   const handleOpenAllocations = async (sec: SectionItem) => {
     setAllocatingSection(sec);
     setAllocTeacherId('');
     setAllocSubjectId('');
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/sections/${sec.id}/subjects-teachers`);
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const list = Array.isArray(data.data)
+          ? data.data
+          : (Array.isArray(data.subjectsTeachers) ? data.subjectsTeachers : []);
+
+        const mapped: SectionTeacherAllocation[] = list
+          .filter((row: any) => row?.assigned_teacher)
+          .map((row: any) => ({
+            id: String(row.id || `${row.class_subject_id}_${row.assigned_teacher?.id || row.assigned_teacher?.teacher_id || 'teacher'}`),
+            teacher_id: String(row.assigned_teacher?.id || row.assigned_teacher?.teacher_id || ''),
+            subject_id: String(row.class_subject_id || row.subject_id || ''),
+            teacher: {
+              id: String(row.assigned_teacher?.id || row.assigned_teacher?.teacher_id || ''),
+              name: row.assigned_teacher?.name || 'Faculty Member',
+              teacher_id: String(row.assigned_teacher?.teacher_id || row.assigned_teacher?.id || '')
+            },
+            subject: {
+              id: String(row.class_subject_id || row.subject_id || ''),
+              name: row.subject_name || 'Subject'
+            },
+            teacher_name: row.assigned_teacher?.name || '',
+            subject_name: row.subject_name || 'Subject',
+            class_name: className || '',
+            section_name: sec.section_name || ''
+          }));
+
+        setSectionTeachers(mapped);
+        try {
+          localStorage.setItem(`paatam_section_allocations_${sec.id}`, JSON.stringify(mapped));
+          localStorage.setItem(`paatam_section_allocations_name_${cleanSecName(sec.section_name)}`, JSON.stringify(mapped));
+        } catch {}
+        return;
+      }
+
+      // Backend explicitly returned no section allocation matrix endpoint/data for this section.
+      // Fail closed and clear stale local cache instead of showing ghost rows.
+      setSectionTeachers([]);
+      try {
+        localStorage.removeItem(`paatam_section_allocations_${sec.id}`);
+        localStorage.removeItem(`paatam_section_allocations_name_${cleanSecName(sec.section_name)}`);
+      } catch {}
+      return;
+    } catch {}
 
     // Check deleted allocations tombstone
     let deletedKeys = new Set<string>();
@@ -696,73 +637,14 @@ export default function ClassDetail() {
       });
     };
 
-    // Check cached section allocations first
+    // Network error fallback only: show cached entries if available.
     let cached: SectionTeacherAllocation[] = [];
     try {
-      const stored = localStorage.getItem(`paatam_section_allocations_${sec.id}`);
+      const stored = localStorage.getItem(`paatam_section_allocations_${sec.id}`) ||
+                     localStorage.getItem(`paatam_section_allocations_name_${cleanSecName(sec.section_name)}`);
       if (stored) {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed)) cached = parsed.filter(isValidAllocation);
-      }
-    } catch {}
-
-    try {
-      // 1. Try documented GET /api/sections/:sectionId/subjects-teachers
-      const res = await fetch(`${API_BASE_URL}/api/sections/${sec.id}/subjects-teachers`);
-      if (res.ok) {
-        const data = await res.json();
-        const list = Array.isArray(data.data)
-          ? data.data
-          : Array.isArray(data.subjects)
-          ? data.subjects
-          : Array.isArray(data.teachers)
-          ? data.teachers
-          : Array.isArray(data)
-          ? data
-          : null;
-        if (list && list.length > 0) {
-          const mappedList = list.map((item: any) => {
-            if (item.assigned_teacher) {
-              return {
-                id: item.class_subject_id || item.id,
-                teacher_id: item.assigned_teacher.id || item.assigned_teacher.teacher_id,
-                subject_id: item.class_subject_id || item.subject_id,
-                teacher: item.assigned_teacher,
-                subject: {
-                  id: item.class_subject_id || item.subject_id,
-                  name: item.subject_name,
-                  code: item.subject_code
-                },
-                teacher_name: item.assigned_teacher.name,
-                subject_name: item.subject_name,
-                class_name: className || '',
-                section_name: sec.section_name || ''
-              };
-            }
-            return item;
-          });
-          const validList = mappedList.filter(isValidAllocation);
-          const combined = [...validList, ...cached];
-          const deduplicated = deduplicateAllocations(combined);
-          setSectionTeachers(deduplicated);
-          return;
-        }
-      }
-    } catch {}
-
-    // Fallback: GET /api/sections/:sectionId/teachers
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/sections/${sec.id}/teachers`);
-      if (res.ok) {
-        const data = await res.json();
-        const list = Array.isArray(data.data) ? data.data : Array.isArray(data.teachers) ? data.teachers : Array.isArray(data) ? data : [];
-        if (list && list.length > 0) {
-          const validList = list.filter(isValidAllocation);
-          const combined = [...validList, ...cached];
-          const deduplicated = deduplicateAllocations(combined);
-          setSectionTeachers(deduplicated);
-          return;
-        }
       }
     } catch {}
 
@@ -778,138 +660,45 @@ export default function ClassDetail() {
     setIsAllocating(true);
 
     const selectedSub = subjects.find(s => s.id === allocSubjectId);
-    const selectedTeacher = availableTeachers.find(t => t.id === allocTeacherId || t.teacher_id === allocTeacherId);
-    const targetSubjectId = selectedSub?.subject_id || selectedSub?.id || allocSubjectId;
-    const targetClassSubId = selectedSub?.class_subject_id || selectedSub?.id || allocSubjectId;
+    try {
+      const classSubjectId = selectedSub?.class_subject_id || selectedSub?.id || allocSubjectId;
+      let assigned = false;
 
-    const newAlloc: SectionTeacherAllocation = {
-      id: `alloc_${Date.now()}`,
-      teacher_id: allocTeacherId,
-      subject_id: targetSubjectId,
-      teacher: selectedTeacher ? {
-        id: selectedTeacher.id,
-        name: selectedTeacher.name,
-        teacher_id: selectedTeacher.teacher_id
-      } : undefined,
-      subject: selectedSub ? {
-        id: selectedSub.id,
-        name: selectedSub.name || selectedSub.subjectName || 'Subject'
-      } : undefined,
-      teacher_name: selectedTeacher?.name || '',
-      subject_name: selectedSub?.name || selectedSub?.subjectName || 'Subject',
-      class_name: className || '',
-      section_name: allocatingSection.section_name || ''
-    };
-
-    const candidateEndpoints = [
-      {
-        url: `${API_BASE_URL}/api/sections/${allocatingSection.id}/subjects-teachers`,
-        method: 'POST',
-        body: {
-          teacher_id: allocTeacherId,
-          subject_id: targetSubjectId,
-          class_subject_id: targetClassSubId
-        }
-      },
-      {
-        url: `${API_BASE_URL}/api/sections/${allocatingSection.id}/subject-teachers`,
-        method: 'POST',
-        body: {
-          teacher_id: allocTeacherId,
-          subject_id: targetSubjectId,
-          class_subject_id: targetClassSubId
-        }
-      },
-      {
-        url: `${API_BASE_URL}/api/teachers/${allocTeacherId}/sections`,
-        method: 'POST',
-        body: {
-          section_id: allocatingSection.id,
-          subject_id: targetSubjectId
-        }
-      },
-      {
-        url: `${API_BASE_URL}/api/sections/${allocatingSection.id}/teachers`,
-        method: 'POST',
-        body: {
-          teacher_id: allocTeacherId,
-          subject_id: targetSubjectId
-        }
-      }
-    ];
-
-    for (const cand of candidateEndpoints) {
-      try {
-        const res = await fetch(cand.url, {
-          method: cand.method,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(cand.body)
-        });
-        if (res.ok) {
-          break;
-        }
-      } catch {}
-    }
-
-    // Always update UI & persist to section cache immediately
-    setSectionTeachers(prev => {
-      // Clear tombstone for this teacher/subject in this section
-      try {
-        const delStored = localStorage.getItem(`paatam_deleted_allocations_${allocatingSection.id}`);
-        if (delStored) {
-          const parsedDel = JSON.parse(delStored);
-          if (Array.isArray(parsedDel)) {
-            const keysToRemove = new Set([
-              String(allocTeacherId).toLowerCase().trim(),
-              (selectedTeacher?.name || '').toLowerCase().trim(),
-              (selectedTeacher?.teacher_id || '').toLowerCase().trim(),
-              `${(selectedTeacher?.name || '').toLowerCase().trim()}__${(selectedSub?.name || selectedSub?.subjectName || '').toLowerCase().trim()}`,
-              `${(selectedTeacher?.teacher_id || '').toLowerCase().trim()}__${(selectedSub?.name || selectedSub?.subjectName || '').toLowerCase().trim()}`
-            ]);
-            const filtered = parsedDel.filter((k: string) => !keysToRemove.has(String(k).toLowerCase().trim()));
-            localStorage.setItem(`paatam_deleted_allocations_${allocatingSection.id}`, JSON.stringify(filtered));
-          }
-        }
-      } catch {}
-
-      const filtered = prev.filter(a => {
-        const tIdentifier = (a.teacher?.teacher_id || a.teacher?.name || (a as any).teacher_name || a.teacher_id || '').toLowerCase().trim();
-        const sIdentifier = (a.subject?.name || (a as any).subject_name || a.subject?.id || a.subject_id || '').toLowerCase().trim();
-        const newTIdentifier = (selectedTeacher?.teacher_id || selectedTeacher?.name || allocTeacherId).toLowerCase().trim();
-        const newSIdentifier = (selectedSub?.name || selectedSub?.subjectName || targetSubjectId).toLowerCase().trim();
-        return !(tIdentifier === newTIdentifier && sIdentifier === newSIdentifier);
+      const putRes = await fetch(`${API_BASE_URL}/api/sections/${allocatingSection.id}/subjects-teachers`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          class_subject_id: String(classSubjectId),
+          teacher_id: String(allocTeacherId)
+        })
       });
-      const updated = [newAlloc, ...filtered];
-      try {
-        localStorage.setItem(`paatam_section_allocations_${allocatingSection.id}`, JSON.stringify(updated));
-        try {
-          const subRecord = {
-            id: String(targetSubjectId),
-            name: selectedSub?.name || selectedSub?.subjectName || 'Subject',
-            code: selectedSub?.code || ''
-          };
-          const raw = localStorage.getItem(`paatam_teacher_subjects_${allocTeacherId}`) || '[]';
-          const parsed = JSON.parse(raw);
-          if (!parsed.some((s: any) => String(s.id) === String(targetSubjectId))) {
-            parsed.push(subRecord);
-            localStorage.setItem(`paatam_teacher_subjects_${allocTeacherId}`, JSON.stringify(parsed));
-          }
-          if (selectedTeacher?.teacher_id) {
-            const raw2 = localStorage.getItem(`paatam_teacher_subjects_${selectedTeacher.teacher_id}`) || '[]';
-            const parsed2 = JSON.parse(raw2);
-            if (!parsed2.some((s: any) => String(s.id) === String(targetSubjectId))) {
-              parsed2.push(subRecord);
-              localStorage.setItem(`paatam_teacher_subjects_${selectedTeacher.teacher_id}`, JSON.stringify(parsed2));
-            }
-          }
-        } catch {}
-      } catch {}
-      return updated;
-    });
 
-    setAllocTeacherId('');
-    setAllocSubjectId('');
-    setIsAllocating(false);
+      if (putRes.ok) {
+        assigned = true;
+      } else {
+        const postRes = await fetch(`${API_BASE_URL}/api/sections/${allocatingSection.id}/subjects-teachers`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            class_subject_id: String(classSubjectId),
+            teacher_id: String(allocTeacherId)
+          })
+        });
+        assigned = postRes.ok;
+      }
+
+      if (!assigned) {
+        throw new Error('Section-level faculty allocation endpoint is unavailable. Please verify backend support for section subject-teacher assignment.');
+      }
+
+      await handleOpenAllocations(allocatingSection);
+      setAllocTeacherId('');
+      setAllocSubjectId('');
+    } catch (err: any) {
+      alert(err?.message || 'Failed to allocate teacher for this section.');
+    } finally {
+      setIsAllocating(false);
+    }
   };
 
   // Deallocate faculty: DELETE /api/sections/:sectionId/teachers/:teacherId or /subjects-teachers
@@ -937,15 +726,33 @@ export default function ClassDetail() {
       localStorage.setItem(`paatam_deleted_allocations_${allocatingSection.id}`, JSON.stringify(newDel));
     } catch {}
 
+    let unassigned = false;
+
     if (targetId && targetId !== 'undefined' && !String(targetId).startsWith('alloc_')) {
       try {
-        await fetch(`${API_BASE_URL}/api/sections/${allocatingSection.id}/subjects-teachers/${targetId}`, {
-          method: 'DELETE'
-        }).catch(() => {});
-        await fetch(`${API_BASE_URL}/api/sections/${allocatingSection.id}/teachers/${targetId}`, {
-          method: 'DELETE'
-        }).catch(() => {});
+        const putRes = await fetch(`${API_BASE_URL}/api/sections/${allocatingSection.id}/subjects-teachers`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            class_subject_id: String(sId),
+            teacher_id: null
+          })
+        });
+        if (putRes.ok) {
+          unassigned = true;
+        } else {
+          const delRes = await fetch(`${API_BASE_URL}/api/sections/${allocatingSection.id}/subjects-teachers/${sId}`, {
+            method: 'DELETE'
+          });
+          unassigned = delRes.ok;
+        }
       } catch {}
+    }
+
+    if (!unassigned) {
+      // Soft-delete fallback for stale/ghost UI rows when backend section-level
+      // deallocation endpoint is unavailable.
+      console.warn('Section deallocation API unavailable; applying local soft delete fallback.');
     }
 
     setSectionTeachers(prev => {
@@ -961,9 +768,14 @@ export default function ClassDetail() {
       });
       try {
         localStorage.setItem(`paatam_section_allocations_${allocatingSection.id}`, JSON.stringify(updated));
+        localStorage.setItem(`paatam_section_allocations_name_${cleanSecName(allocatingSection.section_name)}`, JSON.stringify(updated));
       } catch {}
       return updated;
     });
+
+    if (!unassigned) {
+      alert('Removed locally. Backend did not confirm section deallocation for this record, but this ghost assignment will stay hidden in UI.');
+    }
   };
 
   return (

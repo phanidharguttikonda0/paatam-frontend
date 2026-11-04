@@ -11,7 +11,7 @@ import {
   Pencil,
   X
 } from 'lucide-react';
-import { API_BASE_URL } from '../config/api';
+import { API_BASE_URL, getPresignedUploadUrls, uploadBinaryToS3 } from '../config/api';
 import { useAuth } from '../context/AuthContext';
 
 interface SubjectRecord {
@@ -176,54 +176,7 @@ export default function KnowledgeBase() {
             console.warn('Teacher dashboard fetch error:', e);
           }
 
-          // 2. Scan localStorage paatam_section_allocations_* for explicit teacher allocations
-          try {
-            for (let i = 0; i < localStorage.length; i++) {
-              const key = localStorage.key(i);
-              if (key && (key.startsWith('paatam_section_allocations_') || key.startsWith('paatam_section_allocations_name_'))) {
-                const sId = key.replace(/^paatam_section_allocations_(name_)?/, '');
-                const raw = localStorage.getItem(key);
-                if (raw) {
-                  const list = JSON.parse(raw);
-                  if (Array.isArray(list)) {
-                    for (const alloc of list) {
-                      const matchesTeacher =
-                        String(alloc.teacher_id) === teacherId ||
-                        String(alloc.teacher?.id) === teacherId ||
-                        String(alloc.teacher?.teacher_id) === teacherId ||
-                        (teacherName && alloc.teacher?.name && alloc.teacher.name.toLowerCase().includes(teacherName)) ||
-                        (teacherName && alloc.teacher_name && alloc.teacher_name.toLowerCase().includes(teacherName));
-
-                      if (matchesTeacher && (alloc.subject_name || alloc.subject?.name)) {
-                        addSubjectIfNew({
-                          id: alloc.subject_id || alloc.subject?.id,
-                          sectionId: alloc.section_id || sId,
-                          name: alloc.subject_name || alloc.subject?.name,
-                          grade: alloc.class_name || 'Grade 10',
-                          className: alloc.class_name || 'Grade 10',
-                          sectionName: alloc.section_name || 'Section A'
-                        });
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          } catch (e) {}
-
-          // 3. Fallback: only if no allocations found anywhere, provide the active assigned Section A
-          if (teacherSubjects.length === 0) {
-            addSubjectIfNew({
-              id: '4265262194928642',
-              class_subject_id: '4265262194928642',
-              sectionId: '4259669073767426',
-              name: 'Physics',
-              grade: 'Grade 10',
-              className: 'Grade 10',
-              sectionName: 'Section A',
-              board: 'CBSE'
-            });
-          }
+          // Keep teacher knowledge-base scope strictly tied to backend allocations.
 
           if (isMounted) {
             setSubjectsList(teacherSubjects);
@@ -333,17 +286,7 @@ export default function KnowledgeBase() {
             } catch (e) {}
           }
 
-          // 3. Try global /api/subjects
-          try {
-            const res = await fetch(`${API_BASE_URL}/api/subjects`);
-            if (res.ok) {
-              const data = await res.json();
-              const list = Array.isArray(data?.data) ? data.data : (Array.isArray(data?.subjects) ? data.subjects : Array.isArray(data) ? data : []);
-              list.forEach((s: any) => addAdminSubj(s));
-            }
-          } catch (e) {}
-
-          // 4. Fallback to localStorage master subjects
+          // 3. Fallback to localStorage master subjects
           try {
             const rawMaster = localStorage.getItem('paatam_master_subjects');
             if (rawMaster) {
@@ -354,7 +297,7 @@ export default function KnowledgeBase() {
             }
           } catch (e) {}
 
-          // 5. Default guarantee
+          // 4. Default guarantee
           if (adminSubjects.length === 0) {
             addAdminSubj({
               id: '4265262194928642',
@@ -394,7 +337,7 @@ export default function KnowledgeBase() {
   const activeClassName = activeSubjectObj?.className || activeSubjectObj?.grade || (activeSubject !== 'All subjects' ? activeSubject : '');
   const activeSectionName = activeSubjectObj?.sectionName || '';
 
-  // 2. Fetch Chapters (Documented /api/curriculum/chapters with fallback to /api/rag/chapters)
+  // 2. Fetch Chapters (Documented /api/curriculum/chapters)
   const fetchChaptersForSubject = async (clsName: string, subjName: string) => {
     if (!clsName || subjName === 'All subjects') {
       setChapters([]);
@@ -402,34 +345,24 @@ export default function KnowledgeBase() {
     }
     setIsLoadingChapters(true);
     try {
-      // 1. Try documented endpoint: GET /api/curriculum/chapters?class_subject_id=...
+      // GET /api/curriculum/chapters?class_subject_id=...
       if (activeSubjectObj?.id) {
-        try {
-          const docRes = await fetch(`${API_BASE_URL}/api/curriculum/chapters?class_subject_id=${encodeURIComponent(activeSubjectObj.id)}`);
-          if (docRes.ok) {
-            const docData = await docRes.json();
-            const list = docData.chapters || (Array.isArray(docData) ? docData : null);
-            if (Array.isArray(list)) {
-              setChapters(list);
-              setChapterNumberInput(list.length + 1);
-              setIsLoadingChapters(false);
-              return;
-            }
+        const docRes = await fetch(`${API_BASE_URL}/api/curriculum/chapters?class_subject_id=${encodeURIComponent(activeSubjectObj.id)}`);
+        if (docRes.ok) {
+          const docData = await docRes.json();
+          const list = Array.isArray(docData.data)
+            ? docData.data
+            : (Array.isArray(docData.chapters) ? docData.chapters : (Array.isArray(docData) ? docData : null));
+          if (Array.isArray(list)) {
+            setChapters(list);
+            setChapterNumberInput(list.length + 1);
+            setIsLoadingChapters(false);
+            return;
           }
-        } catch {}
+        }
       }
-
-      // 2. Fallback
-      const res = await fetch(`${API_BASE_URL}/api/rag/chapters?className=${encodeURIComponent(clsName)}&subjectName=${encodeURIComponent(subjName)}`);
-      const data = await res.json();
-      if (data.success && Array.isArray(data.chapters)) {
-        setChapters(data.chapters);
-        // Set default next chapter number
-        setChapterNumberInput(data.chapters.length + 1);
-      } else {
-        setChapters([]);
-        setChapterNumberInput(1);
-      }
+      setChapters([]);
+      setChapterNumberInput(1);
     } catch (err) {
       console.warn('Could not fetch chapters:', err);
       setChapters([]);
@@ -502,24 +435,8 @@ export default function KnowledgeBase() {
         } catch (e) {}
       }
 
-      // 2. Fallback to POST /api/subjects
       if (!createdSubject) {
-        try {
-          const res = await fetch(`${API_BASE_URL}/api/subjects`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              name,
-              grade: newSubjectGrade.trim(),
-              board: newSubjectBoard.trim() || 'CBSE',
-              code: newSubjectCode.trim()
-            })
-          });
-          if (res.ok) {
-            const data = await res.json();
-            createdSubject = data.data || data.subject;
-          }
-        } catch (e) {}
+        throw new Error('Unable to create subject via documented branch catalog endpoint.');
       }
 
       const newSubj: SubjectRecord = {
@@ -559,7 +476,7 @@ export default function KnowledgeBase() {
     }
   };
 
-  // 4. Handle Chapter Ingestion (POST /api/curriculum/chapters/ingest with fallback to /api/rag/chapter/ingest)
+  // 4. Handle Chapter Ingestion (POST /api/curriculum/chapters/ingest)
   const handleIngestChapter = async () => {
     if (uploadedFiles.length === 0 && !chapterTextInput.trim()) {
       alert('⚠️ Please select a Chapter PDF document or provide chapter text.');
@@ -574,65 +491,69 @@ export default function KnowledgeBase() {
     setIngestStatus('Extracting text and identifying subtopics with AI...');
 
     try {
-      // 1. Try documented endpoint: POST /api/curriculum/chapters/ingest
+      // POST /api/curriculum/chapters/ingest
       if (activeSubjectObj.id) {
-        try {
-          const docRes = await fetch(`${API_BASE_URL}/api/curriculum/chapters/ingest`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              class_subject_id: activeSubjectObj.id,
-              chapter_title: chapterTitleInput.trim() || uploadedFiles[0]?.name?.replace(/\.pdf$/i, '') || `Chapter ${chapterNumberInput}`,
-              chapter_number: Number(chapterNumberInput) || 1,
-              chapter_text: chapterTextInput.trim() || `Chapter ${chapterNumberInput}: ${chapterTitleInput.trim()}`,
-              file_name: uploadedFiles[0]?.name || 'chapter.pdf',
-              pdf_url: ''
-            })
-          });
-          if (docRes.ok) {
-            const docData = await docRes.json();
-            if (docData.success || docData.message) {
-              setIngestStatus(`✅ ${docData.message || 'Chapter indexed successfully!'}`);
-              alert(`✅ ${docData.message || 'Chapter ingested successfully!'}`);
-              setUploadedFiles([]);
-              setChapterTitleInput('');
-              setChapterTextInput('');
-              await fetchChaptersForSubject(activeClassName, activeSubject);
-              setIsIngesting(false);
-              return;
+        let uploadedPdfUrl: string | undefined = undefined;
+
+        // If a file was selected, upload it to S3 first to obtain a valid file URL
+        if (uploadedFiles.length > 0 && uploadedFiles[0]) {
+          const file = uploadedFiles[0];
+          try {
+            setIngestStatus('Uploading chapter PDF to secure cloud storage...');
+            const targetSectionId = activeSubjectObj.sectionId || localStorage.getItem('paatam_active_section_id') || 'default';
+            const uploadItems = await getPresignedUploadUrls(targetSectionId, [
+              {
+                file_name: file.name,
+                file_type: file.type || 'application/pdf',
+                purpose: 'question_paper'
+              }
+            ]);
+            const targetUpload = uploadItems?.[0];
+            if (targetUpload?.upload_url) {
+              await uploadBinaryToS3(targetUpload.upload_url, file);
+              uploadedPdfUrl = targetUpload.file_url || targetUpload.upload_url.split('?')[0];
             }
+          } catch (uploadErr) {
+            console.warn('S3 direct upload for chapter PDF was bypassed or failed:', uploadErr);
           }
-        } catch {
-          // Fallback below
         }
-      }
 
-      // 2. Multipart Fallback
-      const formData = new FormData();
-      formData.append('className', activeClassName);
-      formData.append('subjectName', activeSubject);
-      if (chapterTitleInput.trim()) {
-        formData.append('chapterTitle', chapterTitleInput.trim());
-      }
-      formData.append('chapterNumber', String(chapterNumberInput || 1));
-      uploadedFiles.forEach((file) => formData.append('documents', file));
+        setIngestStatus('Extracting text and identifying subtopics with AI...');
 
-      const res = await fetch(`${API_BASE_URL}/api/rag/chapter/ingest`, {
-        method: 'POST',
-        body: formData
-      });
-      const data = await res.json();
+        const resolvedTitle = chapterTitleInput.trim() || uploadedFiles[0]?.name?.replace(/\.pdf$/i, '') || `Chapter ${chapterNumberInput}`;
+        const resolvedText = chapterTextInput.trim() || `Chapter ${chapterNumberInput}: ${resolvedTitle}`;
 
-      if (data.success) {
-        setIngestStatus(`✅ ${data.message || 'Chapter indexed successfully!'}`);
-        alert(`✅ ${data.message || 'Chapter ingested successfully!'}`);
-        setUploadedFiles([]);
-        setChapterTitleInput('');
-        setChapterTextInput('');
-        await fetchChaptersForSubject(activeClassName, activeSubject);
-      } else {
-        alert(`⚠️ Ingestion note: ${data.message}`);
-        setIngestStatus(`Error: ${data.message}`);
+        const payload: Record<string, any> = {
+          class_subject_id: activeSubjectObj.id,
+          chapter_title: resolvedTitle,
+          chapter_number: Number(chapterNumberInput) || 1,
+          chapter_text: resolvedText,
+          file_name: uploadedFiles[0]?.name || 'chapter.pdf'
+        };
+
+        // Only attach pdf_url if we obtained a valid URL; never send an empty string "" which fails backend URL validation
+        if (uploadedPdfUrl && /^https?:\/\//i.test(uploadedPdfUrl)) {
+          payload.pdf_url = uploadedPdfUrl;
+        }
+
+        const docRes = await fetch(`${API_BASE_URL}/api/curriculum/chapters/ingest`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const docData = await docRes.json().catch(() => ({}));
+        if (docRes.ok && (docData.success || docData.message)) {
+          setIngestStatus(`✅ ${docData.message || 'Chapter indexed successfully!'}`);
+          alert(`✅ ${docData.message || 'Chapter ingested successfully!'}`);
+          setUploadedFiles([]);
+          setChapterTitleInput('');
+          setChapterTextInput('');
+          await fetchChaptersForSubject(activeClassName, activeSubject);
+          setIsIngesting(false);
+          return;
+        }
+        alert(`⚠️ Ingestion note: ${docData.message || 'Failed to ingest chapter.'}`);
+        setIngestStatus(`Error: ${docData.message || 'Failed to ingest chapter.'}`);
       }
     } catch (err: any) {
       console.error(err);
@@ -685,23 +606,7 @@ export default function KnowledgeBase() {
     if (!window.confirm(`Are you sure you want to delete Chapter ${chapter.chapter_number}: "${title}"? This will only remove this chapter's vector chunks without affecting other chapters.`)) {
       return;
     }
-
-    try {
-      const idOrTitle = chapter.id || title;
-      const res = await fetch(`${API_BASE_URL}/api/rag/chapters/${encodeURIComponent(idOrTitle)}?className=${encodeURIComponent(activeClassName)}`, {
-        method: 'DELETE'
-      });
-      const data = await res.json();
-      if (data.success) {
-        setChapters((prev) => prev.filter((c) => c.chapter_title !== title && c.id !== chapter.id));
-        alert(`🗑️ Chapter ${chapter.chapter_number} deleted successfully.`);
-      } else {
-        alert(`Could not delete chapter: ${data.message}`);
-      }
-    } catch (err) {
-      console.error('Delete chapter error:', err);
-      alert('Error connecting to delete endpoint.');
-    }
+    alert('Chapter delete API is not documented in API_DOCS and is disabled in strict mode.');
   };
 
   // 5b. Handle Rename / Edit Chapter
@@ -712,28 +617,7 @@ export default function KnowledgeBase() {
       return;
     }
 
-    try {
-      const idOrTitle = chapter.id || currentTitle;
-      const res = await fetch(`${API_BASE_URL}/api/rag/chapters/${encodeURIComponent(idOrTitle)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chapterTitle: newTitle.trim(),
-          chapterNumber: chapter.chapter_number,
-          className: activeClassName
-        })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setChapters((prev) => prev.map((c) => (c.id === chapter.id || c.chapter_title === currentTitle) ? { ...c, chapter_title: newTitle.trim() } : c));
-        alert(`✅ Chapter ${chapter.chapter_number} renamed to "${newTitle.trim()}".`);
-      } else {
-        alert(`Could not rename chapter: ${data.message}`);
-      }
-    } catch (err: any) {
-      console.error('Rename chapter error:', err);
-      alert('Error connecting to update endpoint.');
-    }
+    alert('Chapter rename API is not documented in API_DOCS and is disabled in strict mode.');
   };
 
   const totalChunks = chapters.reduce((acc, c) => acc + (c.chunk_count || 0), 0);

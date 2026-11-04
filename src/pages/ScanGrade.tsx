@@ -9,12 +9,13 @@ import {
   X
 } from 'lucide-react';
 import AgentPipelineStatus from '../components/AgentPipelineStatus';
-import { API_BASE_URL } from '../config/api';
+import { API_BASE_URL, getPresignedUploadUrls, uploadBinaryToS3 } from '../config/api';
 
 export default function ScanGrade({
   lockAssignmentId,
+  preloadedAssignment,
   onBatchComplete
-}: { lockAssignmentId?: string; onBatchComplete?: () => void } = {}) {
+}: { lockAssignmentId?: string; preloadedAssignment?: any; onBatchComplete?: () => void } = {}) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const classSubjectId = searchParams.get('classSubjectId') || '';
@@ -27,7 +28,8 @@ export default function ScanGrade({
   const [selectedLanguage, setSelectedLanguage] = useState('English');
   const [files, setFiles] = useState<File[]>([]);
   const [assignmentId, setAssignmentId] = useState('');
-  const [assignments, setAssignments] = useState<Array<{ id: string; title: string; className: string; subject?: string; language?: string; answerKeyText?: string }>>([]);
+  const [assignments, setAssignments] = useState<Array<{ id: string; title: string; className: string; subject?: string; language?: string; answerKeyText?: string; answerKeyUrl?: string; isPlaceholderAnswerKey?: boolean; sectionId?: string }>>([]);
+  const [isAssignmentLocked, setIsAssignmentLocked] = useState(false);
 
   // Async Execution States
   const [isGrading, setIsGrading] = useState(false);
@@ -39,41 +41,208 @@ export default function ScanGrade({
   const [bulkUploadMode, setBulkUploadMode] = useState<'single_per_student' | 'combined_pdf'>('single_per_student');
   const [bulkJobId, setBulkJobId] = useState<string | null>(null);
   const [batchJob, setBatchJob] = useState<any>(null);
+  const sectionIdFromQuery = searchParams.get('sectionId') || searchParams.get('section_id') || '';
+
+  const getAssignmentId = (item: any) => String(item?.id ?? item?.assignment_id ?? item?.assignmentId ?? '');
+  
+  const extractList = (resData: any): any[] => {
+    if (!resData) return [];
+    if (Array.isArray(resData)) return resData;
+    if (Array.isArray(resData.data)) return resData.data;
+    if (Array.isArray(resData.assignments)) return resData.assignments;
+    if (Array.isArray(resData.data?.assignments)) return resData.data.assignments;
+    return [];
+  };
+
+  const normalizeAssignment = (item: any) => {
+    const rawQuestions = item?.questions || item?.questions_json || [];
+    const questions = Array.isArray(rawQuestions) ? rawQuestions : [];
+
+    const resolvedSubject = (
+      item?.subject ||
+      item?.class_subject?.subject_name ||
+      item?.class_subject?.name ||
+      item?.subject_name ||
+      item?.subjectName ||
+      searchParams.get('subject') ||
+      ''
+    ).trim();
+
+    const resolvedClassName = (
+      item?.className ||
+      item?.class_name ||
+      item?.class_subject?.class_name ||
+      item?.class ||
+      item?.grade ||
+      ''
+    ).trim();
+
+    const rawAkText = String(item?.answerKeyText || item?.answer_key_text || '').trim();
+    const rawAkUrl = String(item?.answerKeyUrl || item?.answer_key_url || '').trim();
+    const isPlaceholderText = /^marking scheme and rubric for/i.test(rawAkText);
+
+    // If questions exist and have answers/criteria, compile a neat rubric preview
+    let compiledRubric = !isPlaceholderText ? rawAkText : '';
+    if (!compiledRubric && questions.length > 0) {
+      const questionsWithAnswers = questions.filter((q: any) => q.answer_key || q.marking_criteria || q.correct_answer || q.answer);
+      if (questionsWithAnswers.length > 0) {
+        compiledRubric = questionsWithAnswers
+          .map((q: any, idx: number) => {
+            const qNum = q.question_number || (idx + 1);
+            const ans = q.answer_key || q.correct_answer || q.answer || '';
+            const marks = q.marks ? ` (${q.marks} mark${q.marks > 1 ? 's' : ''})` : '';
+            const crit = q.marking_criteria ? ` - ${q.marking_criteria}` : '';
+            return `Q${qNum}${marks}: ${ans}${crit}`;
+          })
+          .join('\n');
+      }
+    }
+
+    return {
+      ...item,
+      id: getAssignmentId(item),
+      title: item?.title || item?.exam_title || 'Untitled assignment',
+      className: resolvedClassName,
+      subject: resolvedSubject,
+      language: item?.language || item?.selectedLanguage || 'English',
+      answerKeyText: compiledRubric,
+      rawAnswerKeyText: rawAkText,
+      isPlaceholderAnswerKey: isPlaceholderText,
+      answerKeyUrl: rawAkUrl,
+      questions,
+      sectionId: String(item?.sectionId || item?.section_id || item?.section?.id || '')
+    };
+  };
 
   useEffect(() => {
     let isMounted = true;
 
-    const url = classSubjectId
-      ? `${API_BASE_URL}/api/assignments?classSubjectId=${encodeURIComponent(classSubjectId)}`
-      : `${API_BASE_URL}/api/assignments`;
+    const applyLockedAssignment = (list: any[]) => {
+      if (!lockAssignmentId && !preloadedAssignment) {
+        setIsAssignmentLocked(false);
+        return;
+      }
 
-    fetch(url)
-      .then((res) => res.json())
-      .then((data) => {
-        if (isMounted && data.success && Array.isArray(data.assignments)) {
-          setAssignments(data.assignments);
-          if (lockAssignmentId) {
-            const locked = data.assignments.find((item: any) => item.id === lockAssignmentId);
-            if (locked) {
-              setAssignmentId(locked.id);
-              setSelectedLanguage(locked.language || 'English');
-              if (locked.subject || locked.className) setSubject(locked.subject || locked.className);
-              if (locked.answerKeyText) {
-                setMarkingScheme(locked.answerKeyText);
-                setMarkingSchemeFromPaper(true);
-              }
+      const targetId = String(lockAssignmentId || getAssignmentId(preloadedAssignment));
+      let locked = list.find((item: any) => getAssignmentId(item) === targetId);
+
+      if (!locked && preloadedAssignment) {
+        locked = normalizeAssignment(preloadedAssignment);
+      }
+
+      if (!locked) {
+        // Do not freeze the selector if the requested lock assignment is unavailable.
+        setIsAssignmentLocked(false);
+        return;
+      }
+
+      setAssignmentId(getAssignmentId(locked));
+      setSelectedLanguage(locked.language || 'English');
+
+      const finalSubject = locked.subject || locked.className || searchParams.get('subject') || '';
+      if (finalSubject) {
+        setSubject(finalSubject);
+      }
+
+      if (locked.answerKeyText) {
+        setMarkingScheme(locked.answerKeyText);
+        setMarkingSchemeFromPaper(true);
+      } else {
+        setMarkingScheme('');
+        setMarkingSchemeFromPaper(false);
+      }
+      setIsAssignmentLocked(true);
+    };
+
+    const fetchAssignments = async () => {
+      try {
+        const params = new URLSearchParams();
+        if (classSubjectId) {
+          // Backend variants exist for class subject filtering; send both keys.
+          params.set('classSubjectId', classSubjectId);
+          params.set('class_subject_id', classSubjectId);
+        }
+        const filteredUrl = `${API_BASE_URL}/api/assignments${params.toString() ? `?${params.toString()}` : ''}`;
+
+        const filteredRes = await fetch(filteredUrl);
+        const filteredData = await filteredRes.json().catch(() => ({}));
+        const filteredRawList = extractList(filteredData);
+        const filteredList = filteredRawList.map(normalizeAssignment).filter((item: any) => item.id);
+
+        let finalList = filteredList;
+        const needsFallback = !classSubjectId || filteredList.length === 0 || (lockAssignmentId && !filteredList.some((item: any) => getAssignmentId(item) === String(lockAssignmentId)));
+
+        if (needsFallback) {
+          const allRes = await fetch(`${API_BASE_URL}/api/assignments`);
+          const allData = await allRes.json().catch(() => ({}));
+          const allRawList = extractList(allData);
+          const allList = allRawList.map(normalizeAssignment).filter((item: any) => item.id);
+          if (allList.length > 0) {
+            finalList = allList;
+          }
+        }
+
+        // Fallback: fetch exactly the locked assignment if still missing from list.
+        if (lockAssignmentId && !finalList.some((item: any) => getAssignmentId(item) === String(lockAssignmentId))) {
+          const oneRes = await fetch(`${API_BASE_URL}/api/assignments/${encodeURIComponent(lockAssignmentId)}`);
+          const oneData = await oneRes.json().catch(() => ({}));
+          const directItem = oneData?.assignment || oneData?.data || oneData;
+          if (directItem && (directItem.id || directItem.assignment_id || directItem.assignmentId)) {
+            const normalized = normalizeAssignment(directItem);
+            if (normalized.id) {
+              finalList = [normalized, ...finalList.filter((item: any) => getAssignmentId(item) !== normalized.id)];
             }
           }
         }
-      })
-      .catch(() => {
-        // Scanning still works without a previously dispatched assignment.
-      });
+
+        if (preloadedAssignment) {
+          const preNormalized = normalizeAssignment(preloadedAssignment);
+          if (preNormalized.id && !finalList.some((item: any) => item.id === preNormalized.id)) {
+            finalList = [preNormalized, ...finalList];
+          }
+        }
+
+        if (!isMounted) return;
+        setAssignments(finalList);
+        applyLockedAssignment(finalList);
+      } catch {
+        if (!isMounted) return;
+        setAssignments([]);
+        setIsAssignmentLocked(false);
+      }
+    };
+
+    fetchAssignments();
 
     return () => {
       isMounted = false;
     };
-  }, [classSubjectId, lockAssignmentId]);
+  }, [classSubjectId, lockAssignmentId, preloadedAssignment]);
+
+  // Fallback auto-resolution for Subject if not yet populated
+  useEffect(() => {
+    if (subject) return;
+    const subQuery = searchParams.get('subject');
+    if (subQuery) {
+      setSubject(subQuery);
+      return;
+    }
+
+    const classIdFromQuery = searchParams.get('classId');
+    if (classIdFromQuery && classSubjectId) {
+      fetch(`${API_BASE_URL}/api/classes/${classIdFromQuery}/subjects`)
+        .then((res) => res.json())
+        .then((data) => {
+          const subjects = Array.isArray(data?.data) ? data.data : (Array.isArray(data?.subjects) ? data.subjects : []);
+          const match = subjects.find((s: any) => String(s.id) === String(classSubjectId) || String(s.class_subject_id) === String(classSubjectId));
+          if (match) {
+            const subName = match.subject_name || match.name || match.subjectName || '';
+            if (subName) setSubject(subName);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [subject, classSubjectId, searchParams]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
@@ -91,8 +260,9 @@ export default function ScanGrade({
     const fetchStatus = async () => {
       try {
         const res = await fetch(`${API_BASE_URL}/api/submissions/batch/${bulkJobId}`);
-        const data = await res.json();
-        if (data.success) {
+        const result = await res.json();
+        const data = result.data || result;
+        if (data) {
           setBatchJob(data);
           if (data.status === 'completed' || data.status === 'failed') {
             setIsGrading(false);
@@ -127,35 +297,98 @@ export default function ScanGrade({
 
     const selectedAssignment = assignments.find((item) => item.id === assignmentId);
 
+    const resolveSectionIdForSelectedAssignment = async (): Promise<string> => {
+      const localResolved = String(
+        selectedAssignment?.sectionId ||
+        sectionIdFromQuery ||
+        localStorage.getItem('paatam_active_section_id') ||
+        ''
+      ).trim();
+      if (localResolved) return localResolved;
+
+      // Fallback: fetch assignment details to resolve section binding from backend.
+      if (assignmentId) {
+        try {
+          const res = await fetch(`${API_BASE_URL}/api/assignments/${encodeURIComponent(assignmentId)}`);
+          if (res.ok) {
+            const data = await res.json().catch(() => ({}));
+            const item = data?.assignment || data?.data || data;
+            const apiResolved = String(item?.sectionId || item?.section_id || item?.section?.id || '').trim();
+            if (apiResolved) return apiResolved;
+          }
+        } catch {
+          // Ignore and fall through to error
+        }
+      }
+
+      return '';
+    };
+
     if (isBulkMode) {
       setIsGrading(true);
       setBulkJobId(null);
       setBatchJob(null);
       try {
-        const formData = new FormData();
-        files.forEach((f) => formData.append('submissions', f));
-        formData.append('assignmentId', assignmentId);
-        formData.append('selectedLanguage', selectedLanguage);
-        formData.append('className', selectedAssignment?.className || subject);
-        formData.append('subject', subject);
-        formData.append('markingScheme', markingScheme);
-        formData.append('bulkMode', bulkUploadMode);
-        formData.append('autoSplitPdf', bulkUploadMode === 'combined_pdf' ? 'true' : 'false');
+        // Step 3.1: Get Pre-signed URL for Master Scanned Stack
+        const fileDescriptors = files.map((f) => ({
+          file_name: f.name,
+          file_type: f.type || 'application/pdf',
+          purpose: 'answer_sheets_bulk'
+        }));
+
+        const resolvedSectionId = await resolveSectionIdForSelectedAssignment();
+
+        if (!resolvedSectionId) {
+          throw new Error('No section is attached to this assignment. Open grading from a class section context.');
+        }
+
+        let uploadedFileUrls: string[] = [];
+        try {
+          const presignedItems = await getPresignedUploadUrls(resolvedSectionId, fileDescriptors);
+          for (let i = 0; i < files.length; i++) {
+            const f = files[i];
+            const p = presignedItems[i] || presignedItems[0];
+            if (p?.upload_url) {
+              await uploadBinaryToS3(p.upload_url, f);
+              uploadedFileUrls.push(p.file_url || p.upload_url.split('?')[0]);
+            }
+          }
+        } catch (s3Err) {
+          throw s3Err;
+        }
+
+        // Step 3.2: Trigger Batch Paper Splitting & Evaluation (POST /api/submissions/bulk)
+        let bulkData: any = null;
+        if (uploadedFileUrls.length === 0) {
+          throw new Error('Upload URL generation succeeded but no file URLs were returned.');
+        }
 
         const res = await fetch(`${API_BASE_URL}/api/submissions/bulk`, {
           method: 'POST',
-          body: formData
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            assignment_id: assignmentId,
+            assignmentId,
+            section_id: resolvedSectionId,
+            sectionId: resolvedSectionId,
+            bulk_mode: bulkUploadMode,
+            file_urls: uploadedFileUrls,
+            total_files: files.length
+          })
         });
-        const data = await res.json();
-        if (data.success && data.jobId) {
-          setBulkJobId(data.jobId);
+        bulkData = await res.json().catch(() => ({}));
+
+        const returnedJobId = bulkData.data?.job_id || bulkData.job_id || bulkData.jobId;
+        if (returnedJobId) {
+          setBulkJobId(String(returnedJobId));
+          setBatchJob(bulkData.data || bulkData);
         } else {
-          alert(data.message || 'Failed to start bulk batch job.');
+          alert(bulkData.message || 'Failed to start bulk batch job.');
           setIsGrading(false);
         }
       } catch (err: any) {
         console.error(err);
-        alert('Error connecting to grading backend.');
+        alert(err?.message || 'Error connecting to grading backend.');
         setIsGrading(false);
       }
       return;
@@ -187,25 +420,77 @@ export default function ScanGrade({
     }, 7500);
 
     try {
-      const formData = new FormData();
-      files.forEach((f) => formData.append('submission', f));
-      formData.append('studentName', studentName || 'Student ' + Math.floor(Math.random() * 100));
-      formData.append('subject', subject);
-      formData.append('className', selectedAssignment?.className || subject);
-      formData.append('selectedLanguage', selectedLanguage);
-      formData.append('markingScheme', markingScheme);
-      formData.append('assignmentId', assignmentId);
+      const studentDisplayName = studentName || 'Student ' + Math.floor(Math.random() * 100);
+      const resolvedSectionId = await resolveSectionIdForSelectedAssignment();
+
+      if (!resolvedSectionId) {
+        throw new Error('No section is attached to this assignment. Open grading from a class section context.');
+      }
+
+      // Preferred flow: upload to S3 first, then submit JSON payload to /api/submissions.
+      const primaryFile = files[0];
+      let samplePaperUrl = '';
+      try {
+        let presignedItems: Array<{ upload_url: string; file_url: string }> = [];
+        try {
+          presignedItems = await getPresignedUploadUrls(resolvedSectionId, [
+            {
+              file_name: primaryFile.name,
+              file_type: primaryFile.type || 'application/pdf',
+              purpose: 'student_submission'
+            }
+          ]);
+        } catch {
+          // Backward compatibility with older purpose key used in some environments.
+          presignedItems = await getPresignedUploadUrls(resolvedSectionId, [
+            {
+              file_name: primaryFile.name,
+              file_type: primaryFile.type || 'application/pdf',
+              purpose: 'submission'
+            }
+          ]);
+        }
+
+        const targetUpload = presignedItems[0];
+        if (!targetUpload?.upload_url) {
+          throw new Error('Failed to get upload URL for submission file.');
+        }
+        await uploadBinaryToS3(targetUpload.upload_url, primaryFile);
+        samplePaperUrl = targetUpload.file_url || targetUpload.upload_url.split('?')[0];
+      } catch (uploadErr: any) {
+        throw new Error(uploadErr?.message || 'Failed to upload answer sheet to cloud storage.');
+      }
+
+      const jsonPayload: any = {
+        assignment_id: assignmentId,
+        assignmentId,
+        sample_paper_url: samplePaperUrl,
+        sample_paper_urls: [samplePaperUrl],
+        submission_mode: 'HANDWRITTEN',
+        student_name: studentDisplayName,
+        studentName: studentDisplayName,
+        subject,
+        class_name: selectedAssignment?.className || subject,
+        className: selectedAssignment?.className || subject,
+        selected_language: selectedLanguage,
+        selectedLanguage,
+        marking_scheme: markingScheme,
+        markingScheme
+      };
 
       const res = await fetch(`${API_BASE_URL}/api/submissions`, {
         method: 'POST',
-        body: formData
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(jsonPayload)
       });
 
-      const data = await res.json();
-      if (data.success) {
+      const data = await res.json().catch(() => ({}));
+      const isSuccess = Boolean(data?.success || data?.status === 'success');
+
+      if (isSuccess) {
         setPipelineStep(6);
         setPipelineLog('Grading pipeline complete! Ready for teacher review.');
-        const submissionId = data.submission?.id;
+        const submissionId = data.submission?.id || data.data?.submission_id || data.data?.id;
         setTimeout(() => {
           if (submissionId) {
             navigate(`/review/${submissionId}`);
@@ -214,7 +499,37 @@ export default function ScanGrade({
           }
         }, 1200);
       } else {
-        alert(`Grading failed: ${data.message}`);
+        // Legacy fallback: some older environments still accept multipart directly.
+        const formData = new FormData();
+        files.forEach((f) => formData.append('submission', f));
+        formData.append('studentName', studentDisplayName);
+        formData.append('subject', subject);
+        formData.append('className', selectedAssignment?.className || subject);
+        formData.append('selectedLanguage', selectedLanguage);
+        formData.append('markingScheme', markingScheme);
+        formData.append('assignmentId', assignmentId);
+
+        const fallbackRes = await fetch(`${API_BASE_URL}/api/submissions`, {
+          method: 'POST',
+          body: formData
+        });
+        const fallbackData = await fallbackRes.json().catch(() => ({}));
+        const fallbackOk = Boolean(fallbackData?.success || fallbackData?.status === 'success');
+
+        if (fallbackOk) {
+          setPipelineStep(6);
+          setPipelineLog('Grading pipeline complete! Ready for teacher review.');
+          const submissionId = fallbackData.submission?.id || fallbackData.data?.submission_id || fallbackData.data?.id;
+          setTimeout(() => {
+            if (submissionId) {
+              navigate(`/review/${submissionId}`);
+            } else {
+              navigate('/submissions');
+            }
+          }, 1200);
+        } else {
+          alert(`Grading failed: ${data?.message || fallbackData?.message || 'Invalid submission payload.'}`);
+        }
       }
     } catch (err: any) {
       console.error(err);
@@ -227,6 +542,8 @@ export default function ScanGrade({
       setIsGrading(false);
     }
   };
+
+  const activeAssignment = assignments.find((item) => String(item.id) === String(assignmentId)) || (preloadedAssignment ? normalizeAssignment(preloadedAssignment) : null);
 
   return (
     <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
@@ -322,17 +639,18 @@ export default function ScanGrade({
               <select
                 className="form-select"
                 value={assignmentId}
-                disabled={Boolean(lockAssignmentId)}
-                style={lockAssignmentId ? { background: '#F8FAFC', color: '#475569', cursor: 'not-allowed' } : undefined}
+                disabled={isAssignmentLocked}
+                style={isAssignmentLocked ? { background: '#F8FAFC', color: '#475569', cursor: 'not-allowed' } : undefined}
                 onChange={(e) => {
                   setAssignmentId(e.target.value);
-                  const assignment = assignments.find((item) => item.id === e.target.value);
+                  const assignment = assignments.find((item) => String(item.id) === e.target.value);
                   setSelectedLanguage(assignment?.language || 'English');
                   if (assignment?.subject || assignment?.className) setSubject(assignment.subject || assignment.className);
                   if (assignment?.answerKeyText) {
                     setMarkingScheme(assignment.answerKeyText);
                     setMarkingSchemeFromPaper(true);
                   } else {
+                    setMarkingScheme('');
                     setMarkingSchemeFromPaper(false);
                   }
                 }}
@@ -340,14 +658,14 @@ export default function ScanGrade({
                 <option value="" disabled>Select the matching assignment</option>
                 {assignments.map((assignment) => (
                   <option key={assignment.id} value={assignment.id}>
-                    {assignment.title} · {assignment.subject || assignment.className}
+                    {assignment.title}{assignment.subject || assignment.className ? ` · ${assignment.subject || assignment.className}` : ''}
                   </option>
                 ))}
               </select>
               <p style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '0.2rem' }}>
-                {lockAssignmentId
+                {isAssignmentLocked
                   ? 'Locked to this paper — scans uploaded here are always matched against it.'
-                  : 'This is how the uploaded script is matched to an exam — required before grading.'}
+                  : 'Select the matching dispatched assignment before grading.'}
               </p>
             </div>
 
@@ -456,8 +774,44 @@ export default function ScanGrade({
               </div>
             )}
 
+            {/* Attached Answer Key Document Badge if available */}
+            {activeAssignment?.answerKeyUrl && (
+              <div style={{
+                marginTop: '1rem',
+                marginBottom: '0.25rem',
+                padding: '0.65rem 0.85rem',
+                background: '#F0FDF4',
+                border: '1px solid #BBF7D0',
+                borderRadius: '0.5rem',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '0.5rem'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <FileText className="size-4 text-emerald-600 shrink-0" />
+                  <span style={{ fontSize: '0.8125rem', color: '#166534', fontWeight: 600 }}>
+                    Attached Answer Key PDF
+                  </span>
+                </div>
+                <a
+                  href={activeAssignment.answerKeyUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    fontSize: '0.75rem',
+                    color: '#1D4ED8',
+                    textDecoration: 'underline',
+                    fontWeight: 600
+                  }}
+                >
+                  View / Open PDF ↗
+                </a>
+              </div>
+            )}
+
             {/* Marking Scheme */}
-            <div className="form-group" style={{ marginTop: '1rem' }}>
+            <div className="form-group" style={{ marginTop: activeAssignment?.answerKeyUrl ? '0.75rem' : '1rem' }}>
               <label className="form-label">Answer key / marking scheme (optional)</label>
               <textarea 
                 className="form-textarea"
@@ -470,9 +824,15 @@ export default function ScanGrade({
                 }}
               />
               <p style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '0.2rem' }}>
-                {markingSchemeFromPaper
-                  ? 'Loaded from the deployed question paper\'s answer key. Edit here to override just this batch.'
-                  : 'Leave blank to grade purely from the subject knowledge base.'}
+                {activeAssignment?.answerKeyUrl && !markingScheme ? (
+                  <span style={{ color: '#15803D', fontWeight: 600 }}>
+                    ✓ Answer key PDF is linked to this assignment. You can optionally type custom rubric notes above.
+                  </span>
+                ) : markingSchemeFromPaper ? (
+                  "Loaded from the deployed question paper's answer key. Edit here to override just this batch."
+                ) : (
+                  'Leave blank to grade purely from the subject knowledge base or attached answer key PDF.'
+                )}
               </p>
             </div>
 

@@ -71,7 +71,7 @@ export default function StudentsRoster() {
   const [searchParams] = useSearchParams();
   const initialSectionId = searchParams.get('sectionId') || '';
 
-  const { currentBranchId, branches, role, currentUser } = useAuth();
+  const { currentBranchId, branches, role } = useAuth();
   const isBranchAdmin = ['ADMIN', 'BRANCH_ADMIN', 'DEAN', 'PRINCIPAL', 'VICE_PRINCIPAL'].includes(role?.toUpperCase());
   const isTeacher = role?.toUpperCase() === 'TEACHER';
   const branchId = currentBranchId || (branches.length > 0 ? branches[0].id : '');
@@ -122,31 +122,11 @@ export default function StudentsRoster() {
   const [bulkModalSections, setBulkModalSections] = useState<SectionOption[]>([]);
   const [isLoadingBulkSections, setIsLoadingBulkSections] = useState(false);
 
-  // 1. Fetch Classes (robust across /api/classes, academic years, teacher dashboard & cache)
+  // 1. Fetch Classes from documented academic-year flow
   const fetchClasses = async (): Promise<ClassItem[]> => {
     let loadedClasses: ClassItem[] = [];
 
-    // Strategy A: Global /api/classes (supports data.data, data.classes, data.items, or direct array)
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/classes`);
-      if (res.ok) {
-        const data = await res.json();
-        const list = Array.isArray(data.data)
-          ? data.data
-          : Array.isArray(data.classes)
-          ? data.classes
-          : Array.isArray(data.items)
-          ? data.items
-          : Array.isArray(data)
-          ? data
-          : [];
-        if (list.length > 0) {
-          loadedClasses = list;
-        }
-      }
-    } catch {}
-
-    // Strategy B: Academic Years -> Classes (Classes tied to session)
+    // Strategy A: Academic Years -> Classes (Classes tied to session)
     if (loadedClasses.length === 0) {
       try {
         let ayList: any[] = [];
@@ -161,20 +141,6 @@ export default function StudentsRoster() {
               : [];
           }
         }
-        if (ayList.length === 0) {
-          const ayRes = await fetch(`${API_BASE_URL}/api/academic-years`);
-          if (ayRes.ok) {
-            const ayData = await ayRes.json();
-            ayList = Array.isArray(ayData.data)
-              ? ayData.data
-              : Array.isArray(ayData.academicYears)
-              ? ayData.academicYears
-              : Array.isArray(ayData)
-              ? ayData
-              : [];
-          }
-        }
-
         const activeAy = ayList.find((ay: any) => ay.is_active) || ayList[0];
         if (activeAy?.id) {
           const cRes = await fetch(`${API_BASE_URL}/api/academic-years/${activeAy.id}/classes`);
@@ -195,7 +161,7 @@ export default function StudentsRoster() {
       } catch {}
     }
 
-    // Strategy C: Teacher Dashboard (if logged in as Teacher/Class Incharge)
+    // Strategy B: Teacher Dashboard (if logged in as Teacher/Class Incharge)
     if (loadedClasses.length === 0) {
       try {
         const res = await fetch(`${API_BASE_URL}/api/teacher/dashboard`);
@@ -208,48 +174,58 @@ export default function StudentsRoster() {
             ? data.data.class_teacher_sections
             : [];
 
-          const classMap = new Map<string, ClassItem>();
+          const resolvedTeacherId = String(data?.data?.teacher_id || '').trim();
+          const resolvedTeacherName = String(data?.data?.teacher_name || '').toLowerCase().trim();
 
-          const teacherId = String(currentUser?.id || (currentUser as any)?.teacher_id || (currentUser as any)?.staff_id || '');
-          const teacherName = (currentUser?.name || '').toLowerCase();
-          const explicitSectionIds = new Set<string>();
-          const explicitSectionNames = new Set<string>();
-
-          for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
-            if (key && (key.startsWith('paatam_section_allocations_') || key.startsWith('paatam_section_allocations_name_'))) {
-              const sId = key.replace(/^paatam_section_allocations_(name_)?/, '');
+          let allocationsValidated = false;
+          try {
+            const uniqueSectionIds = Array.from(new Set(allocations.map((a: any) => String(a.section_id)).filter(Boolean)));
+            const sectionRows = await Promise.all(uniqueSectionIds.map(async (sectionId) => {
               try {
-                const raw = localStorage.getItem(key);
-                if (raw) {
-                  const list = JSON.parse(raw);
-                  if (Array.isArray(list)) {
-                    for (const alloc of list) {
-                      const matchesTeacher =
-                        String(alloc.teacher_id) === teacherId ||
-                        String(alloc.teacher?.id) === teacherId ||
-                        String(alloc.teacher?.teacher_id) === teacherId ||
-                        (teacherId && (String(alloc.teacher_id).includes(teacherId) || teacherId.includes(String(alloc.teacher_id)))) ||
-                        (teacherName && alloc.teacher?.name && alloc.teacher.name.toLowerCase().includes(teacherName)) ||
-                        (teacherName && alloc.teacher_name && alloc.teacher_name.toLowerCase().includes(teacherName));
+                const sr = await fetch(`${API_BASE_URL}/api/sections/${sectionId}/subjects-teachers`);
+                if (!sr.ok) return { sectionId, rows: [] as any[] };
+                const sj = await sr.json().catch(() => ({}));
+                const rows = Array.isArray(sj.data)
+                  ? sj.data
+                  : (Array.isArray(sj.subjectsTeachers) ? sj.subjectsTeachers : []);
+                return { sectionId, rows };
+              } catch {
+                return { sectionId, rows: [] as any[] };
+              }
+            }));
 
-                      if (matchesTeacher) {
-                        explicitSectionIds.add(String(sId));
-                        if (alloc.section_name) {
-                          explicitSectionNames.add(cleanSecName(alloc.section_name));
-                        }
-                      }
-                    }
-                  }
+            const bySection = new Map<string, any[]>();
+            sectionRows.forEach((x) => bySection.set(String(x.sectionId), x.rows));
+
+            allocations = allocations.filter((a: any) => {
+              const rows = bySection.get(String(a.section_id)) || [];
+              return rows.some((row: any) => {
+                const teacher = row?.assigned_teacher;
+                if (!teacher) return false;
+
+                const teacherMatches =
+                  (resolvedTeacherId && (String(teacher.id || '') === resolvedTeacherId || String(teacher.teacher_id || '') === resolvedTeacherId)) ||
+                  (resolvedTeacherName && String(teacher.name || '').toLowerCase().trim() === resolvedTeacherName);
+
+                if (!teacherMatches) return false;
+                if (a.class_subject_id && row.class_subject_id) {
+                  return String(row.class_subject_id) === String(a.class_subject_id);
                 }
-              } catch {}
-            }
+                return cleanSecName(row.section_name || a.section_name) === cleanSecName(a.section_name);
+              });
+            });
+            allocationsValidated = true;
+          } catch {
+            allocationsValidated = false;
           }
 
-          if (explicitSectionIds.size > 0 || explicitSectionNames.size > 0) {
+          if (!allocationsValidated) {
+            allocations = [];
+          }
+
+          const classMap = new Map<string, ClassItem>();
+          if (classTeacherSecs.length > 0) {
             allocations = allocations.filter((a: any) =>
-              explicitSectionIds.has(String(a.section_id)) ||
-              explicitSectionNames.has(cleanSecName(a.section_name)) ||
               classTeacherSecs.some((ct: any) =>
                 String(ct.section_id) === String(a.section_id) ||
                 cleanSecName(ct.section_name) === cleanSecName(a.section_name)
@@ -311,7 +287,7 @@ export default function StudentsRoster() {
       } catch {}
     }
 
-    // Strategy D: Cached school classes in localStorage
+    // Strategy C: Cached school classes in localStorage
     if (loadedClasses.length === 0) {
       try {
         const cached = localStorage.getItem('paatam_school_classes');
@@ -396,7 +372,9 @@ export default function StudentsRoster() {
         const res = await fetch(`${API_BASE_URL}/api/sections/${selectedSectionId}/students`);
         if (res.ok) {
           const data = await res.json();
-          const list = data.students || (Array.isArray(data) ? data : []);
+          const list = Array.isArray(data.data)
+            ? data.data
+            : (Array.isArray(data.students) ? data.students : (Array.isArray(data) ? data : []));
           setStudents(list);
           setIsLoading(false);
           return;
@@ -412,7 +390,9 @@ export default function StudentsRoster() {
           const sRes = await fetch(`${API_BASE_URL}/api/sections/${sec.id}/students`);
           if (sRes.ok) {
             const sData = await sRes.json();
-            const list = sData.students || (Array.isArray(sData) ? sData : []);
+              const list = Array.isArray(sData.data)
+                ? sData.data
+                : (Array.isArray(sData.students) ? sData.students : (Array.isArray(sData) ? sData : []));
             allSecStudents.push(...list);
           }
         }
@@ -554,8 +534,8 @@ export default function StudentsRoster() {
           `${API_BASE_URL}/api/branch/${branchId}/students/search?q=${encodeURIComponent(val)}`
         );
         const data = await res.json();
-        if (data.success && Array.isArray(data.students)) {
-          setStudents(data.students);
+        if (Array.isArray(data.data)) {
+          setStudents(data.data);
           return;
         } else if (Array.isArray(data)) {
           setStudents(data);
@@ -732,7 +712,9 @@ export default function StudentsRoster() {
     try {
       const res = await fetch(`${API_BASE_URL}/api/students/${s.id}/submissions`);
       const data = await res.json();
-      const list = data.submissions || (Array.isArray(data) ? data : []);
+      const list = Array.isArray(data.data)
+        ? data.data
+        : (Array.isArray(data.submissions) ? data.submissions : (Array.isArray(data) ? data : []));
       setSubmissionsList(list);
     } catch {
       setSubmissionsList([]);

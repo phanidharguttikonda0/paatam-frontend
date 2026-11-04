@@ -59,6 +59,48 @@ export async function checkSystemHealth(): Promise<{ status: string; timestamp?:
   }
 }
 
+export interface PresignedUploadItem {
+  purpose: string;
+  upload_url: string;
+  file_url: string;
+}
+
+export async function getPresignedUploadUrls(
+  sectionId: string,
+  files: Array<{ file_name: string; file_type: string; purpose: string }>
+): Promise<PresignedUploadItem[]> {
+  const normalizedSectionId = String(sectionId || '').trim();
+  const res = await fetch(`${API_BASE_URL}/api/assignments/upload-urls`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      section_id: normalizedSectionId,
+      sectionId: normalizedSectionId,
+      files
+    })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.status === 'error') {
+    throw new Error(data.message || 'Failed to get S3 upload URLs');
+  }
+  const uploads = data.data?.uploads || data.uploads || [];
+  return uploads;
+}
+
+export async function uploadBinaryToS3(uploadUrl: string, file: File | Blob): Promise<void> {
+  // CRITICAL: Do NOT send Authorization: Bearer to S3
+  const res = await window.fetch(uploadUrl, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': file.type || 'application/pdf'
+    },
+    body: file
+  });
+  if (!res.ok) {
+    throw new Error(`S3 direct upload failed with status ${res.status}`);
+  }
+}
+
 // Global fetch enhancer:
 // 1. Automatically strips double slashes from URLs (e.g. dev//api -> dev/api)
 // 2. Injects 'Authorization: Bearer <token>' if a token is stored

@@ -209,7 +209,11 @@ export default function ExamGenerator() {
   // Fetch subjects on mount
   useEffect(() => {
     const branch = currentBranchId || (branches.length > 0 ? branches[0].id : '');
-    const url = branch ? `${API_BASE_URL}/api/branch/${branch}/subjects` : `${API_BASE_URL}/api/subjects`;
+    if (!branch) {
+      setSubjects([]);
+      return;
+    }
+    const url = `${API_BASE_URL}/api/branch/${branch}/subjects`;
     fetch(url)
       .then((res) => res.json())
       .then((data) => {
@@ -234,7 +238,7 @@ export default function ExamGenerator() {
 
   // Load chapters & subtopics whenever subject changes
   useEffect(() => {
-    if (!activeClassName || !subject) {
+    if (!activeClassName || !subject || !selectedClassSubjectId) {
       setChapters([]);
       setSelectedChapters([]);
       setSelectedSubtopics([]);
@@ -243,15 +247,18 @@ export default function ExamGenerator() {
     }
 
     setIsLoadingChapters(true);
-    fetch(`${API_BASE_URL}/api/rag/chapters?className=${encodeURIComponent(activeClassName)}&subjectName=${encodeURIComponent(subject)}`)
+    fetch(`${API_BASE_URL}/api/curriculum/chapters?class_subject_id=${encodeURIComponent(selectedClassSubjectId)}`)
       .then((res) => res.json())
       .then((data) => {
-        if (data.success && Array.isArray(data.chapters) && data.chapters.length > 0) {
-          setChapters(data.chapters);
+        const list = Array.isArray(data.data)
+          ? data.data
+          : (Array.isArray(data.chapters) ? data.chapters : []);
+        if (list.length > 0) {
+          setChapters(list);
           // Auto-select all chapters and subtopics by default
-          const allChapterTitles = data.chapters.map((c: CurriculumChapter) => c.chapter_title);
+          const allChapterTitles = list.map((c: CurriculumChapter) => c.chapter_title);
           setSelectedChapters(allChapterTitles);
-          const allSubs = data.chapters.flatMap((c: CurriculumChapter) => c.subtopics || []);
+          const allSubs = list.flatMap((c: CurriculumChapter) => c.subtopics || []);
           setSelectedSubtopics(allSubs);
           // Populate initial balanced distribution for all chapters
           autoDistributeBlueprint(targetExamMarks, allChapterTitles);
@@ -435,40 +442,24 @@ export default function ExamGenerator() {
 
         if (docRes.ok) {
           const docData = await docRes.json();
-          if (docData.success && Array.isArray(docData.questions) && docData.questions.length > 0) {
-            setQuestions(docData.questions);
+          const generated = Array.isArray(docData.data?.questions)
+            ? docData.data.questions
+            : (Array.isArray(docData.questions) ? docData.questions : []);
+          if (generated.length > 0) {
+            setQuestions(generated);
             const generatedId = 'paper-' + Date.now();
             setCurrentPaperId(generatedId);
-            savePaperToStorage(docData.questions, payload.examTitle, generatedId);
-            alert(`✅ Examination Paper Generated Successfully! (${docData.totalQuestions || docData.questions.length} Questions)`);
+            savePaperToStorage(generated, payload.examTitle, generatedId);
+            alert(`✅ Examination Paper Generated Successfully! (${generated.length} Questions)`);
             genSuccess = true;
           }
         }
       } catch {
-        // Fallback below
+        // Keep strict documented flow only.
       }
 
       if (!genSuccess) {
-        // Fallback to legacy endpoint
-        const res = await fetch(`${API_BASE_URL}/api/rag/generate-exam`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-
-        const data = await res.json();
-        console.log('📥 [EXAM GENERATOR UI] Response received:', data);
-
-        if (data.success && Array.isArray(data.questions) && data.questions.length > 0) {
-          setQuestions(data.questions);
-          // Automatically save newly generated paper to history
-          const generatedId = 'paper-' + Date.now();
-          setCurrentPaperId(generatedId);
-          savePaperToStorage(data.questions, payload.examTitle, generatedId);
-          alert(`✅ Examination Paper Generated Successfully! (${data.totalQuestions} Questions, ${data.totalMarks} Marks)`);
-        } else {
-          alert(data.message || 'Error generating question paper.');
-        }
+        alert('Generation failed via documented /api/assignments/generate endpoint.');
       }
     } catch (err) {
       console.error('❌ [EXAM GENERATOR UI] Request failed:', err);
@@ -486,8 +477,11 @@ export default function ExamGenerator() {
       try {
         const res = await fetch(`${API_BASE_URL}/api/assignments`);
         const data = await res.json();
-        if (data.success && Array.isArray(data.assignments)) {
-          dbPapers = data.assignments.filter((a: any) => Array.isArray(a.questions) && a.questions.length > 0);
+        const list = Array.isArray(data.data)
+          ? data.data
+          : (Array.isArray(data.assignments) ? data.assignments : []);
+        if (list.length > 0) {
+          dbPapers = list.filter((a: any) => Array.isArray(a.questions) && a.questions.length > 0);
         }
       } catch (err) {
         console.warn('Unable to fetch assignments from API:', err);
@@ -802,42 +796,11 @@ export default function ExamGenerator() {
           }
         }
       } catch {
-        // Fallback below
+        // Keep strict documented flow only.
       }
 
       if (!regenSuccess) {
-        // Fallback to legacy endpoint
-        const res = await fetch(`${API_BASE_URL}/api/rag/regenerate-question`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            question: q,
-            subjectName: subject,
-            className: activeClassName,
-            chapterTitle: q.topic || q.stem || (selectedChapters.length > 0 ? selectedChapters[0] : ''),
-            language: paperLanguage,
-            difficulty
-          })
-        });
-        const data = await res.json();
-        if (data.success && data.question) {
-          const replacement = {
-            ...data.question,
-            id: q.id || 'q-' + Date.now(),
-            number: q.number || q.questionNo,
-            questionNo: q.questionNo || q.number,
-            section: q.section,
-            marks: q.marks
-          };
-          setQuestions((prev) => prev.map((item) => {
-            const itemId = item.id || item.number || item.questionNo;
-            return itemId === qId ? replacement : item;
-          }));
-          setSaveSuccessMsg(`🔄 Question Q${q.questionNo || q.number} regenerated with textbook precision!`);
-          setTimeout(() => setSaveSuccessMsg(''), 3000);
-        } else {
-          alert(data.message || 'Unable to regenerate question.');
-        }
+        alert('Unable to regenerate question using documented endpoint.');
       }
     } catch (err) {
       console.error(err);
@@ -888,40 +851,11 @@ export default function ExamGenerator() {
           }
         }
       } catch {
-        // Fallback below
+        // Keep strict documented flow only.
       }
 
       if (!diagSuccess) {
-        // Fallback to legacy endpoint
-        const res = await fetch(`${API_BASE_URL}/api/rag/generate-question-image`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt,
-            questionText: q.text,
-            subject: subject
-          })
-        });
-        const data = await res.json();
-        if (data.success && (data.imageUrl || data.diagramSvg)) {
-          setQuestions((prev) => prev.map((item) => {
-            const itemId = item.id || item.number || item.questionNo;
-            if (itemId === qId) {
-              return {
-                ...item,
-                imageUrl: data.imageUrl || undefined,
-                diagramSvg: data.diagramSvg || undefined,
-                imagePrompt: prompt,
-                hasVisual: true
-              };
-            }
-            return item;
-          }));
-          setSaveSuccessMsg(`🎨 Generated educational visual diagram for Q${q.questionNo || q.number}!`);
-          setTimeout(() => setSaveSuccessMsg(''), 3000);
-        } else {
-          alert(data.message || 'Could not generate visual diagram.');
-        }
+        alert('Could not generate visual diagram using documented endpoint.');
       }
     } catch (err) {
       console.error(err);
@@ -988,33 +922,7 @@ export default function ExamGenerator() {
           }
         } catch {}
 
-        if (!diagSuccess) {
-          const res = await fetch(`${API_BASE_URL}/api/rag/generate-question-image`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              prompt,
-              questionText: q.text,
-              subject: subject
-            })
-          });
-          const data = await res.json();
-          if (data.success && (data.imageUrl || data.diagramSvg)) {
-            setQuestions((prev) => prev.map((item) => {
-              const itemId = item.id || item.number || item.questionNo;
-              if (itemId === qId) {
-                return {
-                  ...item,
-                  imageUrl: data.imageUrl || undefined,
-                  diagramSvg: data.diagramSvg || undefined,
-                  imagePrompt: prompt,
-                  hasVisual: true
-                };
-              }
-              return item;
-            }));
-          }
-        }
+        if (!diagSuccess) continue;
       }
       setSaveSuccessMsg(`🎨 Generated figures for all ${missing.length} visual questions!`);
       setTimeout(() => setSaveSuccessMsg(''), 3000);

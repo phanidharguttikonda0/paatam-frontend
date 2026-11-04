@@ -42,8 +42,18 @@ export default function ReviewQueue({ onScanScript }: { onScanScript?: () => voi
 
   const fetchSubmissions = async () => {
     try {
-      // 1. If an assignment is selected, call documented endpoint: GET /api/assignments/:id/submissions
+      // 1. If an assignment is selected, query documented endpoint: GET /api/submissions?assignment_id=:id
       if (selectedAssignmentId) {
+        const queryRes = await fetch(`${API_BASE_URL}/api/submissions?assignment_id=${encodeURIComponent(selectedAssignmentId)}`);
+        if (queryRes.ok) {
+          const qData = await queryRes.json();
+          const qList = qData.data?.submissions || qData.submissions || (Array.isArray(qData) ? qData : []);
+          if (Array.isArray(qList)) {
+            setSubmissions(qList);
+            return;
+          }
+        }
+        // Secondary fallback: GET /api/assignments/:id/submissions
         const res = await fetch(`${API_BASE_URL}/api/assignments/${selectedAssignmentId}/submissions`);
         if (res.ok) {
           const data = await res.json();

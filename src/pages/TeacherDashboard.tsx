@@ -60,61 +60,23 @@ export default function TeacherDashboard() {
     let isMounted = true;
 
     const loadTeacherData = async () => {
-      const teacherIdentifier = String(currentUser?.id || (currentUser as any)?.teacher_id || (currentUser as any)?.staff_id || '');
-      const teacherName = (currentUser?.name || '').toLowerCase();
-      const explicitSectionIds = new Set<string>();
-      const explicitSectionNames = new Set<string>();
+      let allocations: any[] = [];
       let classTeacherSecs: any[] = [];
-      const localAssigned: AssignedSection[] = [];
+      let resolvedTeacherId = String(currentUser?.id || (currentUser as any)?.teacher_id || (currentUser as any)?.staff_id || '').trim();
+      let resolvedTeacherName = String(currentUser?.name || '').toLowerCase().trim();
+      
+      // 1. Fetch teacher dashboard endpoint to get teacher details and allocations
 
-      // Pre-scan localStorage for section allocations assigned to this teacher
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && (key.startsWith('paatam_section_allocations_') || key.startsWith('paatam_section_allocations_name_'))) {
-          const sId = key.replace(/^paatam_section_allocations_(name_)?/, '');
-          try {
-            const raw = localStorage.getItem(key);
-            if (raw) {
-              const list = JSON.parse(raw);
-              if (Array.isArray(list)) {
-                for (const alloc of list) {
-                  const matchesTeacher =
-                    String(alloc.teacher_id) === teacherIdentifier ||
-                    String(alloc.teacher?.id) === teacherIdentifier ||
-                    String(alloc.teacher?.teacher_id) === teacherIdentifier ||
-                    (teacherIdentifier && (String(alloc.teacher_id).includes(teacherIdentifier) || teacherIdentifier.includes(String(alloc.teacher_id)))) ||
-                    (teacherName && alloc.teacher?.name && alloc.teacher.name.toLowerCase().includes(teacherName)) ||
-                    (teacherName && alloc.teacher_name && alloc.teacher_name.toLowerCase().includes(teacherName));
-
-                  if (matchesTeacher) {
-                    explicitSectionIds.add(String(sId));
-                    const secClean = cleanSecName(alloc.section_name || 'A');
-                    explicitSectionNames.add(secClean);
-                    localAssigned.push({
-                      section_id: sId,
-                      class_name: alloc.class_name || 'Grade 10',
-                      section_name: secClean,
-                      subject_name: alloc.subject?.name || alloc.subject_name || 'Physics',
-                      subject_code: alloc.subject?.code || 'PHY-101',
-                      class_id: alloc.class_id ? String(alloc.class_id) : '4259669056990210',
-                      class_subject_id: alloc.class_subject_id ? String(alloc.class_subject_id) : (alloc.subject_id ? String(alloc.subject_id) : '4265262194928642')
-                    });
-                  }
-                }
-              }
-            }
-          } catch {}
-        }
-      }
-
-      // 1. Try teacher dashboard endpoint
       try {
         const res = await fetch(`${API_BASE_URL}/api/teacher/dashboard`);
         if (res.ok) {
           const json = await res.json();
           if (isMounted && json.data) {
             setDashboardData(json.data);
-            let allocations = Array.isArray(json.data.teaching_allocations)
+            if (json.data.teacher_id) resolvedTeacherId = String(json.data.teacher_id).trim();
+            if (json.data.teacher_name) resolvedTeacherName = String(json.data.teacher_name).toLowerCase().trim();
+
+            allocations = Array.isArray(json.data.teaching_allocations)
               ? json.data.teaching_allocations
               : (Array.isArray(json.data.assigned_sections) ? json.data.assigned_sections : []);
 
@@ -129,35 +91,6 @@ export default function TeacherDashboard() {
               );
             }
 
-            // Role-based section filter: If school Dean explicitly allocated this teacher to specific section(s),
-            // ensure the teacher ONLY sees their designated section(s) rather than every section in the grade.
-            if (explicitSectionIds.size > 0 || explicitSectionNames.size > 0) {
-              allocations = allocations.filter((a: any) =>
-                explicitSectionIds.has(String(a.section_id)) ||
-                explicitSectionNames.has(cleanSecName(a.section_name)) ||
-                classTeacherSecs.some((ct: any) =>
-                  String(ct.section_id) === String(a.section_id) ||
-                  cleanSecName(ct.section_name) === cleanSecName(a.section_name)
-                )
-              );
-            }
-
-            if (allocations.length > 0) {
-              setAssignedSections(
-                allocations.map((a: any) => ({
-                  section_id: String(a.section_id),
-                  class_name: a.class_name || 'Grade 10',
-                  section_name: cleanSecName(a.section_name),
-                  subject_name: a.subject_name || 'Physics',
-                  subject_code: a.subject_code || (a.class_subject_id ? `SUB-${a.class_subject_id}` : undefined),
-                  class_id: a.class_id ? String(a.class_id) : '4259669056990210',
-                  class_subject_id: a.class_subject_id ? String(a.class_subject_id) : (a.subject_id ? String(a.subject_id) : '4265262194928642')
-                }))
-              );
-            } else if (localAssigned.length > 0) {
-              setAssignedSections(localAssigned);
-            }
-
             if (typeof json.data.pending_grading_count === 'number') {
               setPendingCount(json.data.pending_grading_count);
             }
@@ -165,13 +98,75 @@ export default function TeacherDashboard() {
               setEvaluatedCount(json.data.completed_evaluations_count);
             }
           }
-        } else if (localAssigned.length > 0 && isMounted) {
-          setAssignedSections(localAssigned);
         }
       } catch (e) {
-        if (localAssigned.length > 0 && isMounted) {
-          setAssignedSections(localAssigned);
-        }
+        console.warn('Teacher dashboard fetch fallback:', e);
+      }
+
+      // Validate each allocation against section-level assigned_teacher matrix.
+      // This avoids over-broad allocations caused by global teacher-subject mappings.
+      let allocationsValidated = false;
+      try {
+        const uniqueSectionIds = Array.from(new Set(allocations.map((a: any) => String(a.section_id)).filter(Boolean)));
+        const sectionRows = await Promise.all(uniqueSectionIds.map(async (sectionId) => {
+          try {
+            const res = await fetch(`${API_BASE_URL}/api/sections/${sectionId}/subjects-teachers`);
+            if (!res.ok) return { sectionId, rows: [] as any[] };
+            const data = await res.json().catch(() => ({}));
+            const rows = Array.isArray(data.data)
+              ? data.data
+              : (Array.isArray(data.subjectsTeachers) ? data.subjectsTeachers : []);
+            return { sectionId, rows };
+          } catch {
+            return { sectionId, rows: [] as any[] };
+          }
+        }));
+
+        const bySection = new Map<string, any[]>();
+        sectionRows.forEach((x) => bySection.set(String(x.sectionId), x.rows));
+
+        allocations = allocations.filter((a: any) => {
+          const rows = bySection.get(String(a.section_id)) || [];
+          return rows.some((row: any) => {
+            const teacher = row?.assigned_teacher;
+            if (!teacher) return false;
+
+            const teacherMatches =
+              (resolvedTeacherId && (String(teacher.id || '') === resolvedTeacherId || String(teacher.teacher_id || '') === resolvedTeacherId)) ||
+              (resolvedTeacherName && String(teacher.name || '').toLowerCase().trim() === resolvedTeacherName);
+
+            if (!teacherMatches) return false;
+
+            if (a.class_subject_id && row.class_subject_id) {
+              return String(row.class_subject_id) === String(a.class_subject_id);
+            }
+
+            return cleanSecName(row.section_name || a.section_name) === cleanSecName(a.section_name);
+          });
+        });
+        allocationsValidated = true;
+      } catch {
+        allocationsValidated = false;
+      }
+
+      if (!allocationsValidated) {
+        allocations = [];
+      }
+
+      if (allocations.length > 0 && isMounted) {
+        setAssignedSections(
+          allocations.map((a: any) => ({
+            section_id: String(a.section_id),
+            class_name: a.class_name || 'Grade 10',
+            section_name: cleanSecName(a.section_name),
+            subject_name: a.subject_name || 'Physics',
+            subject_code: a.subject_code || (a.class_subject_id ? `SUB-${a.class_subject_id}` : undefined),
+            class_id: a.class_id ? String(a.class_id) : '4259669056990210',
+            class_subject_id: a.class_subject_id ? String(a.class_subject_id) : (a.subject_id ? String(a.subject_id) : '4265262194928642')
+          }))
+        );
+      } else if (isMounted) {
+        setAssignedSections([]);
       }
 
       // 2. Fetch live submissions for real queue counts

@@ -131,8 +131,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
     const endpoints = currentUser.role === 'CORPORATE_ADMIN' || currentUser.role === 'SUPER_ADMIN'
-      ? [`${API_BASE_URL}/api/branch/corporate/all`, `${API_BASE_URL}/api/branch/corporate`, `${API_BASE_URL}/api/branches`]
-      : [`${API_BASE_URL}/api/branch-admin/my-branches`, `${API_BASE_URL}/api/branches`];
+      ? [`${API_BASE_URL}/api/branch/corporate/all`]
+      : [`${API_BASE_URL}/api/branch-admin/my-branches`];
 
     let found = false;
     for (const url of endpoints) {
@@ -246,7 +246,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Helper to resolve string / registration number to numeric corporateId
   const resolveNumericCorporateId = async (idOrReg?: string): Promise<string> => {
     let raw = idOrReg?.trim() || localStorage.getItem('paatam_last_corporate_id') || '';
-    if (!raw) return '4004316239145986';
+    if (!raw) return '';
     if (/^\d{6,}$/.test(raw)) return raw;
 
     try {
@@ -261,19 +261,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     } catch {}
 
-    return localStorage.getItem('paatam_last_corporate_id') || raw;
+    return localStorage.getItem('paatam_last_corporate_id') || '';
   };
 
   // 1. Corporate Admin Login Initiation
   const loginCorporateInitiate = async (identifier: string, corporateId?: string) => {
     try {
       const activeCorpId = await resolveNumericCorporateId(corporateId);
-      const isEmail = identifier.includes('@');
+      if (!activeCorpId) {
+        return { success: false, message: 'corporateId is required for login.' };
+      }
+      if (!identifier.includes('@')) {
+        return { success: false, message: 'Corporate login requires email as per API contract.' };
+      }
       const payload: any = {
         corporateId: activeCorpId,
-        identifier: identifier.trim(),
-        email: isEmail ? identifier.trim() : undefined,
-        mobile: !isEmail ? identifier.trim() : undefined
+        email: identifier.trim()
       };
 
       const res = await fetch(`${API_BASE_URL}/api/auth/corporate/login`, {
@@ -298,12 +301,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const loginCorporateVerify = async (identifier: string, otp: string, corporateId?: string) => {
     try {
       const activeCorpId = await resolveNumericCorporateId(corporateId);
-      const isEmail = identifier.includes('@');
+      if (!activeCorpId) {
+        return { success: false, message: 'corporateId is required for verification.' };
+      }
+      if (!identifier.includes('@')) {
+        return { success: false, message: 'Corporate verification requires email as per API contract.' };
+      }
       const payload: any = {
         corporateId: activeCorpId,
-        identifier: identifier.trim(),
-        email: isEmail ? identifier.trim() : undefined,
-        mobile: !isEmail ? identifier.trim() : undefined,
+        email: identifier.trim(),
         otp: otp.trim()
       };
 
