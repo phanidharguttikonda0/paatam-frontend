@@ -345,7 +345,6 @@ export default function ReviewSubmission() {
   const rollNumber = submission.rollNumber || submission.student?.roll_no || submission.roll_no || '';
   // API list view: assignment_title / subject_name; detail view: assignment.title / assignment.class_subject.subject_name
   const examTitle = submission.assignment_title || submission.assignment?.title || submission.subject_name || submission.subject || '';
-  const paperTitle = submission.assignment_title || submission.assignment?.title || '';
   // API uses submitted_at (snake_case), not createdAt
   const rawDate = submission.submitted_at || submission.createdAt || submission.submittedAt || submission.created_at;
   const dateStr = rawDate ? new Date(rawDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
