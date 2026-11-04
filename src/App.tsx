@@ -1,4 +1,14 @@
-import { BrowserRouter as Router, Routes, Route, useLocation, Navigate } from 'react-router-dom';
+
+import {
+  BrowserRouter as Router,
+  Routes,
+  Route,
+  useLocation,
+  Navigate,
+} from 'react-router-dom';
+
+import { useState } from 'react';
+
 import Sidebar from './components/Sidebar';
 import TopBar from './components/TopBar';
 import LoginPage from './pages/LoginPage';
@@ -18,13 +28,19 @@ import Teachers from './pages/Teachers';
 import StudentsRoster from './pages/StudentsRoster';
 import Campuses from './pages/Campuses';
 import TeacherDashboard from './pages/TeacherDashboard';
+
+import CampusOverview from './pages/principal/Overview';
+import ClassesSections from './pages/principal/ClassesSections';
+import TeacherPerformance from './pages/principal/TeacherPerformance';
+
 import { AuthProvider, useAuth } from './context/AuthContext';
 
-// Route dispatcher that handles both path routing (/upload, /submissions) and legacy search params (?tab=scan)
+// Route dispatcher that handles both path routing and legacy search params
 function MainRouteDispatcher() {
   const location = useLocation();
   const searchParams = new URLSearchParams(location.search);
   const tab = searchParams.get('tab');
+
   const { currentUser } = useAuth();
   const role = currentUser?.role?.toUpperCase();
 
@@ -42,9 +58,17 @@ function MainRouteDispatcher() {
     if (tab === 'scan') return <ScanGrade />;
     if (tab === 'queue') return <ReviewQueue />;
     if (tab === 'knowledge') return <KnowledgeBase />;
-    if (tab === 'generator' || tab === 'exam-generator') return <ExamGenerator />;
+
+    if (tab === 'generator' || tab === 'exam-generator') {
+      return <ExamGenerator />;
+    }
+
     if (tab === 'analytics') return <Analytics />;
-    if (role === 'TEACHER') return <TeacherDashboard />;
+
+    if (role === 'TEACHER') {
+      return <TeacherDashboard />;
+    }
+
     return <Overview />;
   }
 
@@ -64,12 +88,19 @@ function App() {
 function AppLayout() {
   const { currentUser, isAuthenticated } = useAuth();
   const location = useLocation();
+
   const role = currentUser?.role?.toUpperCase();
-  const isCorporateAdmin = role === 'CORPORATE_ADMIN' || role === 'SUPER_ADMIN';
+
+  const isCorporateAdmin =
+    role === 'CORPORATE_ADMIN' || role === 'SUPER_ADMIN';
+
   const isTeacher = role === 'TEACHER';
   const isStudent = role === 'STUDENT';
+  const isPrincipal = role === 'PRINCIPAL';
 
-  // If unauthenticated, always start at the Login Page
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  // If unauthenticated, always start at Login Page
   if (!isAuthenticated) {
     return <LoginPage />;
   }
@@ -79,56 +110,123 @@ function AppLayout() {
     if (isStudent) {
       return <Navigate to="/student" replace />;
     }
+
     if (isCorporateAdmin) {
       return <Navigate to="/campuses" replace />;
     }
+
     return <Navigate to="/" replace />;
   }
 
   return (
-    <div className="app-shell-container">
-      {/* PAATAM.AI Left Navigation Sidebar */}
-      <Sidebar />
+    <div
+      className={`app-shell-container ${
+        sidebarCollapsed ? 'sidebar-collapsed' : ''
+      }`}
+    >
+      <Sidebar
+        collapsed={sidebarCollapsed}
+        onToggle={() =>
+          setSidebarCollapsed((previous) => !previous)
+        }
+      />
 
-      {/* Main Workspace Area with Global TopBar */}
       <div className="app-main-content">
         <TopBar />
+
         <Routes>
-          <Route path="/" element={<MainRouteDispatcher />} />
+          {/* Main Dashboard */}
+          <Route
+            path="/"
+            element={<MainRouteDispatcher />}
+          />
 
           {/* Institutional / Student Analytics */}
           <Route
             path="/analytics"
-            element={isStudent ? <Navigate to="/student" replace /> : <Analytics />}
+            element={
+              isStudent ? (
+                <Navigate to="/student" replace />
+              ) : (
+                <Analytics />
+              )
+            }
           />
 
-          {/* Classes & Sections (Corporate Admin, Branch Admin, Teacher) */}
+          {/* Principal Campus Overview */}
+          <Route
+            path="/principal/overview"
+            element={
+              isPrincipal ? (
+                <CampusOverview />
+              ) : (
+                <Navigate to="/" replace />
+              )
+            }
+          />
+
+          {/* Principal Classes & Sections Performance */}
+          <Route
+            path="/principal/classes"
+            element={
+              isPrincipal ? (
+                <ClassesSections />
+              ) : (
+                <Navigate to="/" replace />
+              )
+            }
+          />
+
+          {/* Classes & Sections */}
           <Route
             path="/classes"
-            element={isStudent ? <Navigate to="/student" replace /> : <Classes />}
-          />
-          <Route
-            path="/classes/:classId"
-            element={isStudent ? <Navigate to="/student" replace /> : <ClassDetail />}
-          />
-          <Route
-            path="/classes/:classId/:classSubjectId"
-            element={isStudent ? <Navigate to="/student" replace /> : <SubjectWorkspace />}
+            element={
+              isStudent ? (
+                <Navigate to="/student" replace />
+              ) : (
+                <Classes />
+              )
+            }
           />
 
-          {/* Faculty Directory (Corporate Admin & Branch Admin only) */}
+          <Route
+            path="/classes/:classId"
+            element={
+              isStudent ? (
+                <Navigate to="/student" replace />
+              ) : (
+                <ClassDetail />
+              )
+            }
+          />
+
+          <Route
+            path="/classes/:classId/:classSubjectId"
+            element={
+              isStudent ? (
+                <Navigate to="/student" replace />
+              ) : (
+                <SubjectWorkspace />
+              )
+            }
+          />
+
+          {/* Faculty Directory */}
           <Route
             path="/teachers"
             element={
               isTeacher || isStudent ? (
-                <Navigate to={isStudent ? '/student' : '/'} replace />
+                <Navigate
+                  to={isStudent ? '/student' : '/'}
+                  replace
+                />
               ) : (
                 <Teachers />
               )
             }
           />
 
-          {/* Students & Parents Roster (Branch Admin & Teacher only — NOT Corporate Admin, NOT Student) */}
+          {/* Students & Parents Roster */}
           <Route
             path="/students"
             element={
@@ -142,7 +240,7 @@ function AppLayout() {
             }
           />
 
-          {/* Campuses & Branches (Corporate Admin & Branch Admin only — NOT Teacher, NOT Student) */}
+          {/* Campuses & Branches */}
           <Route
             path="/campuses"
             element={
@@ -157,9 +255,12 @@ function AppLayout() {
           />
 
           {/* Paper Details */}
-          <Route path="/papers/:assignmentId" element={<PaperDetail />} />
+          <Route
+            path="/papers/:assignmentId"
+            element={<PaperDetail />}
+          />
 
-          {/* Scan & Grade (Branch Admin & Teacher only — NOT Corporate Admin, NOT Student) */}
+          {/* Scan & Grade */}
           <Route
             path="/upload"
             element={
@@ -173,21 +274,41 @@ function AppLayout() {
             }
           />
 
-          {/* Submissions & Review Queue (Corporate Admin, Branch Admin, Teacher) */}
+          {/* Submissions & Review Queue */}
           <Route
             path="/submissions"
-            element={isStudent ? <Navigate to="/student" replace /> : <ReviewQueue />}
-          />
-          <Route
-            path="/review/:id"
-            element={isStudent ? <Navigate to="/student" replace /> : <ReviewSubmission />}
-          />
-          <Route
-            path="/verify/:id"
-            element={isStudent ? <Navigate to="/student" replace /> : <ReviewSubmission />}
+            element={
+              isStudent ? (
+                <Navigate to="/student" replace />
+              ) : (
+                <ReviewQueue />
+              )
+            }
           />
 
-          {/* Knowledge Base (Curriculum RAG — Branch Admin & Teacher only — NOT Corporate Admin, NOT Student) */}
+          <Route
+            path="/review/:id"
+            element={
+              isStudent ? (
+                <Navigate to="/student" replace />
+              ) : (
+                <ReviewSubmission />
+              )
+            }
+          />
+
+          <Route
+            path="/verify/:id"
+            element={
+              isStudent ? (
+                <Navigate to="/student" replace />
+              ) : (
+                <ReviewSubmission />
+              )
+            }
+          />
+
+          {/* Knowledge Base */}
           <Route
             path="/knowledge"
             element={
@@ -201,7 +322,7 @@ function AppLayout() {
             }
           />
 
-          {/* Exam Generator (Branch Admin & Teacher only — NOT Corporate Admin, NOT Student) */}
+          {/* Exam Generator */}
           <Route
             path="/generator"
             element={
@@ -229,26 +350,47 @@ function AppLayout() {
             }
           />
 
-          {/* Student Dedicated Portal (Student ONLY) */}
+          {/* Student Dedicated Portal */}
           <Route
             path="/student"
             element={
               !isStudent ? (
-                <Navigate to={isCorporateAdmin ? '/campuses' : '/'} replace />
+                <Navigate
+                  to={isCorporateAdmin ? '/campuses' : '/'}
+                  replace
+                />
               ) : (
                 <StudentPortal />
               )
             }
           />
 
-          {/* Catch-all redirect */}
+          {/* Catch-all redirect - ALWAYS KEEP LAST */}
           <Route
             path="*"
             element={
               <Navigate
-                to={isStudent ? '/student' : isCorporateAdmin ? '/campuses' : '/'}
+                to={
+                  isStudent
+                    ? '/student'
+                    : isCorporateAdmin
+                    ? '/campuses'
+                    : '/'
+                }
                 replace
               />
+            }
+          />
+
+          {/* Principal Teacher Performance */}
+          <Route
+            path="/principal/teachers"
+            element={
+              isPrincipal ? (
+                <TeacherPerformance />
+              ) : (
+                <Navigate to="/" replace />
+              )
             }
           />
         </Routes>
