@@ -357,7 +357,7 @@ export default function Analytics({ initialView = 'analytics' }: AnalyticsProps)
   const [overview, setOverview] = useState<AnalyticsOverview>(DEFAULT_OVERVIEW);
   const [students, setStudents] = useState<StudentAnalyticsItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [apiError, setApiError] = useState(false);
+  const [, setApiError] = useState(false);
 
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedClass, setSelectedClass] = useState('All Classes');
@@ -790,12 +790,7 @@ export default function Analytics({ initialView = 'analytics' }: AnalyticsProps)
           Loading student analytics…
         </div>
       )}
-      {!isLoading && apiError && (
-        <div className="analytics-error" role="alert">
-          Unable to load some live analytics data. Please check the connection.
-          Demo records may be displayed where live data is unavailable.
-        </div>
-      )}
+
 
       {selectedSubject === 'All Subjects' ? (
         <>

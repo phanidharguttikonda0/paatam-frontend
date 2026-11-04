@@ -3872,3 +3872,224 @@ p {
   justify-content: center;
 }
 
+/* ==========================================
+   COLLAPSIBLE ROLE-BASED SIDEBAR
+========================================== */
+
+.sidebar-brand {
+  min-height: 76px;
+  gap: 0.75rem;
+}
+
+.sidebar-brand-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-toggle-button {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #cbd5e1;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.sidebar-toggle-button:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: white;
+}
+
+.sidebar-is-collapsed {
+  width: 5rem;
+  min-width: 5rem;
+  align-items: center;
+  overflow: hidden;
+}
+
+.sidebar-is-collapsed .sidebar-brand {
+  width: 100%;
+  padding: 1rem 0.6rem;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.7rem;
+}
+
+.sidebar-is-collapsed .sidebar-logo-icon {
+  width: 2.5rem;
+  height: 2.5rem;
+}
+
+.sidebar-is-collapsed .sidebar-toggle-button {
+  width: 36px;
+  height: 36px;
+}
+
+/* Main workspace naturally takes remaining width */
+.app-shell-container.sidebar-collapsed .app-main-content {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Desktop sidebar width transition */
+.app-sidebar {
+  transition: width 0.22s ease, min-width 0.22s ease;
+}
+
+/* Existing tablet navigation remains horizontal */
+@media (max-width: 1024px) {
+  .sidebar-is-collapsed {
+    width: 100%;
+    min-width: 0;
+    min-height: auto;
+    height: auto;
+    flex-direction: row;
+  }
+}
+
+/* =========================================
+   SIDEBAR - FINAL LAYOUT FIX
+========================================= */
+
+.app-sidebar {
+  width: 16rem;
+  min-width: 16rem;
+  height: 100vh;
+  min-height: 100vh;
+  overflow: hidden;
+  flex-shrink: 0;
+  transition: width 0.22s ease, min-width 0.22s ease;
+}
+
+.sidebar-nav {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+
+  /* Hide scrollbar without disabling navigation scrolling */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.sidebar-nav::-webkit-scrollbar {
+  display: none;
+  width: 0;
+}
+
+.app-sidebar::-webkit-scrollbar {
+  display: none;
+}
+
+.sidebar-brand {
+  width: 100%;
+  min-height: 76px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sidebar-brand-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-toggle-button {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: #cbd5e1;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.sidebar-toggle-button:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+
+/* Collapsed desktop sidebar */
+.app-sidebar.sidebar-is-collapsed {
+  width: 5rem;
+  min-width: 5rem;
+  align-items: center;
+}
+
+.sidebar-is-collapsed .sidebar-brand {
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.75rem 0.4rem;
+}
+
+.sidebar-is-collapsed .sidebar-logo-icon {
+  width: 2.5rem;
+  height: 2.5rem;
+  flex-shrink: 0;
+}
+
+.sidebar-is-collapsed .sidebar-toggle-button {
+  margin: 0;
+}
+
+/* Hide navigation and footer while collapsed */
+.sidebar-is-collapsed .sidebar-nav,
+.sidebar-is-collapsed .sidebar-footer {
+  display: none;
+}
+
+/* Main area uses all remaining width */
+.app-main-content {
+  flex: 1;
+  min-width: 0;
+  width: 0;
+}
+
+/* Mobile/tablet: preserve horizontal navigation */
+@media (max-width: 1024px) {
+  .app-sidebar {
+    width: 100%;
+    min-width: 0;
+    min-height: auto;
+    height: auto;
+  }
+
+  .sidebar-nav {
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .sidebar-is-collapsed {
+    width: 100%;
+    min-width: 0;
+    height: auto;
+    min-height: auto;
+  }
+
+  .sidebar-is-collapsed .sidebar-brand {
+    flex-direction: row;
+    justify-content: flex-start;
+    padding: 0.65rem 1rem;
+  }
+
+  .sidebar-is-collapsed .sidebar-toggle-button {
+    margin-left: auto;
+  }
+
+  .app-main-content {
+    width: 100%;
+  }
+}
